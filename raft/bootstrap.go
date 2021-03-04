@@ -31,11 +31,13 @@ func (rn *RawNode) Bootstrap(peers []Peer) error {
 	if len(peers) == 0 {
 		return errors.New("must provide at least one peer to Bootstrap")
 	}
+	// 获取当前节点 raftLog 中最后一个 Entry 记录的索引值
 	lastIndex, err := rn.raft.raftLog.storage.LastIndex()
 	if err != nil {
 		return err
 	}
 
+	// 若不为 0, 则表示这是一个非空的 Storage, 则返回错误
 	if lastIndex != 0 {
 		return errors.New("can't bootstrap a nonempty Storage")
 	}
@@ -47,17 +49,23 @@ func (rn *RawNode) Bootstrap(peers []Peer) error {
 
 	// TODO(tbg): remove StartNode and give the application the right tools to
 	// bootstrap the initial membership in a cleaner way.
+	//
+	// 切换为 Follower 状态, 因为节点初始启动, 所以任期号为 1
 	rn.raft.becomeFollower(1, None)
 	ents := make([]pb.Entry, len(peers))
 	for i, peer := range peers {
+		// 根据传递的节点列表, 创建对应的 ConfChange 实例, 其 Type 是 ConfChangeAddNode, 表示添加指定节点
 		cc := pb.ConfChange{Type: pb.ConfChangeAddNode, NodeID: peer.ID, Context: peer.Context}
+		// 序列化 ConfChange 记录
 		data, err := cc.Marshal()
 		if err != nil {
 			return err
 		}
 
+		// 将 ConfChange 记录序列化后的数据封装成 EntryConfChange 类型的 Entry 记录
 		ents[i] = pb.Entry{Type: pb.EntryConfChange, Term: 1, Index: uint64(i + 1), Data: data}
 	}
+	// 将 EntryConfChange 记录追加到 raftLog 中
 	rn.raft.raftLog.append(ents...)
 
 	// Now apply them, mainly so that the application can call Campaign
@@ -72,6 +80,8 @@ func (rn *RawNode) Bootstrap(peers []Peer) error {
 	//
 	// TODO(bdarnell): These entries are still unstable; do we need to preserve
 	// the invariant that committed < unstable?
+	//
+	// 直接修改 raftLog.committed 值, 提交上述 EntryConfChange 记录
 	rn.raft.raftLog.committed = uint64(len(ents))
 	for _, peer := range peers {
 		rn.raft.applyConfChange(pb.ConfChange{NodeID: peer.ID, Type: pb.ConfChangeAddNode}.AsV2())

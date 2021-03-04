@@ -28,8 +28,12 @@ import (
 // simple and joint consensus while performing the proper validation that allows
 // refusing invalid configuration changes before they affect the active
 // configuration.
+//
+// Changer 用于配置更改. 它提供了在执行合适的 validation 时可以处理简单且共同的共识的方法,
+// 以允许在无效配置更改影响有效配置前拒绝无效配置更改.
 type Changer struct {
 	Tracker   tracker.ProgressTracker
+	// 当前 raftLog 中最后一条 Entry 记录的索引值
 	LastIndex uint64
 }
 
@@ -161,13 +165,13 @@ func (c Changer) apply(cfg *tracker.Config, prs tracker.ProgressMap, ccs ...pb.C
 			continue
 		}
 		switch cc.Type {
-		case pb.ConfChangeAddNode:
+		case pb.ConfChangeAddNode: // 添加节点
 			c.makeVoter(cfg, prs, cc.NodeID)
-		case pb.ConfChangeAddLearnerNode:
+		case pb.ConfChangeAddLearnerNode: // 添加 Learner 节点
 			c.makeLearner(cfg, prs, cc.NodeID)
-		case pb.ConfChangeRemoveNode:
+		case pb.ConfChangeRemoveNode: // 移除节点
 			c.remove(cfg, prs, cc.NodeID)
-		case pb.ConfChangeUpdateNode:
+		case pb.ConfChangeUpdateNode: // 更新节点
 		default:
 			return fmt.Errorf("unexpected conf type %d", cc.Type)
 		}
@@ -182,6 +186,7 @@ func (c Changer) apply(cfg *tracker.Config, prs tracker.ProgressMap, ccs ...pb.C
 // majority config.
 func (c Changer) makeVoter(cfg *tracker.Config, prs tracker.ProgressMap, id uint64) {
 	pr := prs[id]
+	// 为新增节点创建对应的 Progress 实例
 	if pr == nil {
 		c.initProgress(cfg, prs, id, false /* isLearner */)
 		return
@@ -239,11 +244,13 @@ func (c Changer) remove(cfg *tracker.Config, prs tracker.ProgressMap, id uint64)
 		return
 	}
 
+	// 从 Voters 中删除该节点 ID
 	delete(incoming(cfg.Voters), id)
 	nilAwareDelete(&cfg.Learners, id)
 	nilAwareDelete(&cfg.LearnersNext, id)
 
 	// If the peer is still a voter in the outgoing config, keep the Progress.
+	// 从 prs 字段中删除对应的 Progress 实例
 	if _, onRight := outgoing(cfg.Voters)[id]; !onRight {
 		delete(prs, id)
 	}
@@ -272,6 +279,8 @@ func (c Changer) initProgress(cfg *tracker.Config, prs tracker.ProgressMap, id u
 		// When a node is first added, we should mark it as recently active.
 		// Otherwise, CheckQuorum may cause us to step down if it is invoked
 		// before the added node has had a chance to communicate with us.
+		//
+		// 首次添加节点时, 认为新增节点与当前节点连通, 否则在进行 CheckQuorum 检测时可能会使得当前节点放弃其 Leader 角色
 		RecentActive: true,
 	}
 }

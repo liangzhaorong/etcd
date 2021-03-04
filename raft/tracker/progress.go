@@ -27,7 +27,13 @@ import (
 // NB(tbg): Progress is basically a state machine whose transitions are mostly
 // strewn around `*raft.raft`. Additionally, some fields are only used when in a
 // certain State. All of this isn't ideal.
+//
+// Leader 节点会记录集群中其他节点的日志复制情况（NextIndex 和 MatchIndex）. 在 etcd-raft 模块中,
+// 每个 Follower 节点对应的 NextIndex 值和 MatchIndex 值都封装在 Progress 实例中, 除此之外, 每个
+// Progress 实例中还封装了对应 Follower 节点的相关信息.
 type Progress struct {
+	// Match: 对应 Follower 节点当前已经成功复制的 Entry 记录的索引值; (即已追加到 raftLog 中)
+	// Next: 对应 Follower 节点下一个待复制的 Entry 记录的索引值.
 	Match, Next uint64
 	// State defines how the leader should interact with the follower.
 	//
@@ -40,6 +46,8 @@ type Progress struct {
 	//
 	// When in StateSnapshot, leader should have sent out snapshot
 	// before and stops sending any replication message.
+	//
+	// 对应 Follower 节点的复制状态.
 	State StateType
 
 	// PendingSnapshot is used in StateSnapshot.
@@ -47,6 +55,8 @@ type Progress struct {
 	// index of the snapshot. If pendingSnapshot is set, the replication process of
 	// this Progress will be paused. raft will not resend snapshot until the pending one
 	// is reported to be failed.
+	//
+	// 当前正在发送的快照数据信息, 实际为当前发送的快照数据中的最后一条 Entry 记录的索引值.
 	PendingSnapshot uint64
 
 	// RecentActive is true if the progress is recently active. Receiving any messages
@@ -54,11 +64,15 @@ type Progress struct {
 	// RecentActive can be reset to false after an election timeout.
 	//
 	// TODO(tbg): the leader should always have this set to true.
+	//
+	// 从当前 Leader 节点的角度来看, 该 Progress 实例对应的 Follower 节点是否存活.
 	RecentActive bool
 
 	// ProbeSent is used while this follower is in StateProbe. When ProbeSent is
 	// true, raft should pause sending replication message to this peer until
 	// ProbeSent is reset. See ProbeAcked() and IsPaused().
+	//
+	// StateProbe 此状态下, 消息发送后, 该字段将设置为 true, 表示暂停后续消息的发送
 	ProbeSent bool
 
 	// Inflights is a sliding window for the inflight messages.
@@ -73,15 +87,22 @@ type Progress struct {
 	// When a leader receives a reply, the previous inflights should
 	// be freed by calling inflights.FreeLE with the index of the last
 	// received entry.
+	//
+	// 记录了已经发送出去但未收到响应的消息信息.
 	Inflights *Inflights
 
 	// IsLearner is true if this progress is tracked for a learner.
+	//
+	// 该 Progress 实例对应的节点是否是一个 Learner 节点
 	IsLearner bool
 }
 
 // ResetState moves the Progress into the specified State, resetting ProbeSent,
 // PendingSnapshot, and Inflights.
+//
+// ResetState 将 Progress 切换到指定的状态, 并重置 ProbeSent, PendingSnapshot, Inflights 等字段
 func (pr *Progress) ResetState(state StateType) {
+	// 重置 ProbeSent 为 false, 则表示允许该 Progress 向 peer 发送复制消息
 	pr.ProbeSent = false
 	pr.PendingSnapshot = 0
 	pr.State = state
@@ -105,6 +126,8 @@ func min(a, b uint64) uint64 {
 // ProbeAcked is called when this peer has accepted an append. It resets
 // ProbeSent to signal that additional append messages should be sent without
 // further delay.
+//
+// ProbeAcked 将 ProbeSent 设置为 false, 表示 Leader 节点可以继续向对应 Follower 节点发送 MsgApp 消息（即复制 Entry 记录）
 func (pr *Progress) ProbeAcked() {
 	pr.ProbeSent = false
 }
@@ -126,7 +149,10 @@ func (pr *Progress) BecomeProbe() {
 }
 
 // BecomeReplicate transitions into StateReplicate, resetting Next to Match+1.
+//
+// BecomeReplicate 将当前 Progress 对应的节点切换为复制模式
 func (pr *Progress) BecomeReplicate() {
+	// 重置 Progress 为复制模式, 即允许该 Progress 向 peer 发送复制消息
 	pr.ResetState(StateReplicate)
 	pr.Next = pr.Match + 1
 }
@@ -141,14 +167,21 @@ func (pr *Progress) BecomeSnapshot(snapshoti uint64) {
 // MaybeUpdate is called when an MsgAppResp arrives from the follower, with the
 // index acked by it. The method returns false if the given n index comes from
 // an outdated message. Otherwise it updates the progress and returns true.
+//
+// MaybeUpdate 尝试修改 Match 和 Next 字段, 用来标识对应节点 Entry 记录复制的情况. Leader 节点除了在向自身 raftLog
+// 中追加消息时（即 appendEntry() 方法）会调用该方法, 当 Leader 节点收到 Follower 节点的 MsgAppResp 消息（即 MsgApp
+// 消息的响应消息）时, 也会调用该方法尝试修改 Follower 节点对应的 Progress 实例.
 func (pr *Progress) MaybeUpdate(n uint64) bool {
 	var updated bool
 	if pr.Match < n {
+		// n 之前的成功发送所有 Entry 记录已经写入对应节点的 raftLog 中
 		pr.Match = n
 		updated = true
+		// 将 ProbeSent 设置为 false, 表示 Leader 节点可以继续向对应 Follower 节点发送 MsgApp 消息（即复制 Entry 记录）
 		pr.ProbeAcked()
 	}
 	if pr.Next < n+1 {
+		// 移动 Next 字段, 下次要复制的 Entry 记录从 Next 开始
 		pr.Next = n + 1
 	}
 	return updated
@@ -169,29 +202,38 @@ func (pr *Progress) OptimisticUpdate(n uint64) { pr.Next = n + 1 }
 //
 // If the rejection is genuine, Next is lowered sensibly, and the Progress is
 // cleared for sending log entries.
+//
+// MaybeDecrTo 根据对应 Progress 的状态和 MsgAppResp 消息携带的提示信息, 完成 Progress.Next 的更新.
+// rejected: 是被拒绝 MsgApp 消息的 Index 字段值;
+// last: 是被拒绝 MsgAppResp 消息的 RejectHint 字段值（即对应 Follower 节点 raftLog 中最后一条 Entry 记录的索引）.
 func (pr *Progress) MaybeDecrTo(rejected, last uint64) bool {
 	if pr.State == StateReplicate {
 		// The rejection must be stale if the progress has matched and "rejected"
 		// is smaller than "match".
-		if rejected <= pr.Match {
+		if rejected <= pr.Match { // 出现过时的 MsgAppResp 消息, 直接忽略
 			return false
 		}
 		// Directly decrease next to match + 1.
 		//
 		// TODO(tbg): why not use last if it's larger?
+		//
+		// 处于 StateReplicate 状态时, 发送 MsgApp 消息的同时会直接调用 Progress.optimisticUpdate() 方法增加 Next,
+		// 这就使得 Next 可能会比 Match 大很多, 这里回退 Next 至 Match 位置, 并在后面重新发送 MsgApp 消息进行尝试.
 		pr.Next = pr.Match + 1
 		return true
 	}
 
 	// The rejection must be stale if "rejected" does not match next - 1. This
 	// is because non-replicating followers are probed one entry at a time.
-	if pr.Next-1 != rejected {
+	if pr.Next-1 != rejected { // 出现过时的 MsgAppResp 消息, 直接忽略
 		return false
 	}
 
+	// 根据 MsgAppResp 携带的信息重置 Next
 	if pr.Next = min(rejected, last+1); pr.Next < 1 {
-		pr.Next = 1
+		pr.Next = 1 // 将 Next 重置为 1
 	}
+	// Next 重置完成, 恢复消息发送, 并在后面重新发送 MsgApp 消息
 	pr.ProbeSent = false
 	return true
 }
@@ -202,6 +244,8 @@ func (pr *Progress) MaybeDecrTo(rejected, last uint64) bool {
 // operation, this is false. A throttled node will be contacted less frequently
 // until it has reached a state in which it's able to accept a steady stream of
 // log entries again.
+//
+// IsPaused 检测目标节点当前所处的状态, 确定是否可以向该目标节点发送消息
 func (pr *Progress) IsPaused() bool {
 	switch pr.State {
 	case StateProbe:

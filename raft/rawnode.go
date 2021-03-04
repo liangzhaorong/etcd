@@ -31,8 +31,12 @@ var ErrStepPeerNotFound = errors.New("raft: cannot step as peer not found")
 // RawNode is a thread-unsafe Node.
 // The methods of this struct correspond to the methods of Node and are described
 // more fully there.
+//
+// RawNode 是非线程安全的 Node.
+// 该结构的方法与 Node 的方法相对应, 并在此进行了更全面的描述.
 type RawNode struct {
 	raft       *raft
+	// prevSoftSt 和 prevHardSt 用于记录上次创建 Ready 实例时记录的 raft 实例的相关状态
 	prevSoftSt *SoftState
 	prevHardSt pb.HardState
 }
@@ -45,7 +49,9 @@ type RawNode struct {
 // state manually by setting up a Storage that has a first index > 1 and which
 // stores the desired ConfState as its InitialState.
 func NewRawNode(config *Config) (*RawNode, error) {
+	// 根据指定配置创建 raft 实例, 并将 raft 节点切换为 Follower 状态
 	r := newRaft(config)
+	// 创建 RawNode 实例
 	rn := &RawNode{
 		raft: r,
 	}
@@ -55,6 +61,8 @@ func NewRawNode(config *Config) (*RawNode, error) {
 }
 
 // Tick advances the internal logical clock by a single tick.
+//
+// Tick 通过信号时钟递增内部的逻辑时钟（选举/心跳）
 func (rn *RawNode) Tick() {
 	rn.raft.tick()
 }
@@ -137,8 +145,10 @@ func (rn *RawNode) readyWithoutAccept() Ready {
 // this call and the prior call to Ready().
 func (rn *RawNode) acceptReady(rd Ready) {
 	if rd.SoftState != nil {
+		// prevSoftSt 记录此次返回 Ready 实例的 SoftState 状态
 		rn.prevSoftSt = rd.SoftState
 	}
+	// 清空 raft.msgs 和 raft.readStates
 	if len(rd.ReadStates) != 0 {
 		rn.raft.readStates = nil
 	}
@@ -147,20 +157,27 @@ func (rn *RawNode) acceptReady(rd Ready) {
 
 // HasReady called when RawNode user need to check if any Ready pending.
 // Checking logic in this method should be consistent with Ready.containsUpdates().
+//
+// HasReady 检测当前是否有待处理的 Ready 实例
 func (rn *RawNode) HasReady() bool {
 	r := rn.raft
+	// 检测 raft 状态是否发生变化
 	if !r.softState().equal(rn.prevSoftSt) {
 		return true
 	}
 	if hardSt := r.hardState(); !IsEmptyHardState(hardSt) && !isHardStateEqual(hardSt, rn.prevHardSt) {
 		return true
 	}
+
+	// 检测是否有新的快照数据
 	if r.raftLog.unstable.snapshot != nil && !IsEmptySnap(*r.raftLog.unstable.snapshot) {
 		return true
 	}
+	// 检测是否有待发送到其他节点的消息 或 是否有待应用的 Entry 记录
 	if len(r.msgs) > 0 || len(r.raftLog.unstableEntries()) > 0 || r.raftLog.hasNextEnts() {
 		return true
 	}
+	// 检测是否有待处理的只读请求
 	if len(r.readStates) != 0 {
 		return true
 	}

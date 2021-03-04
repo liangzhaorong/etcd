@@ -83,21 +83,42 @@ func (EntryType) EnumDescriptor() ([]byte, []int) { return fileDescriptorRaft, [
 type MessageType int32
 
 const (
-	MsgHup            MessageType = 0
-	MsgBeat           MessageType = 1
-	MsgProp           MessageType = 2
-	MsgApp            MessageType = 3
-	MsgAppResp        MessageType = 4
-	MsgVote           MessageType = 5
-	MsgVoteResp       MessageType = 6
-	MsgSnap           MessageType = 7
-	MsgHeartbeat      MessageType = 8
-	MsgHeartbeatResp  MessageType = 9
+	MsgHup            MessageType = 0 // 将当前节点切换成 Candidate 状态（或是 PerCandidate 状态）
+	MsgBeat           MessageType = 1 //
+	MsgProp           MessageType = 2 // 表示客户端发往到集群的写请求
+	MsgApp            MessageType = 3 // 用于 Leader 节点向 Follower 节点复制 Entry 记录时使用的消息
+	MsgAppResp        MessageType = 4 // Follower 节点响应 Leader 节点的 MsgApp 消息
+	MsgVote           MessageType = 5 // Candidate 节点发送的选举消息
+	MsgVoteResp       MessageType = 6 // Follower 节点对 MsgVote 选举消息的响应
+	// 在 Leader 节点尝试向集群中的 Follower 节点发送 MsgApp 消息时, 如果查找不到待发送的 Entry 记录（即该 Follower 节点
+	// 对应的 Progress.Next 指定的 Entry 记录）, 则会尝试通过 MsgSnap 消息将快照数据发送到 Follower 节点, Follower 节点
+	// 之后会通过快照数据恢复其自身状态, 从而可以与 Leader 节点进行正常的 Entry 记录复制.
+	MsgSnap           MessageType = 7 // Leader 节点向 Follower 节点发送的快照数据
+	MsgHeartbeat      MessageType = 8 // Leader 节点心跳计时器超时时发送的心跳消息
+	MsgHeartbeatResp  MessageType = 9 // Follower 节点对心跳消息的响应
+	// 如果 Leader 节点发送 MsgSnap 消息时出现异常, 则会调用 raft 接口的 ReportUnreachable() 方法和 ReportSnapshot()
+	// 方法发送 MsgUnreachable 和 MsgSnapStatus 消息.
 	MsgUnreachable    MessageType = 10
 	MsgSnapStatus     MessageType = 11
+	// 本地消息, 当 Leader 节点的选举计时器超时时, 若开启了 checkQuorum 机制, 则会通过处理该消息来检测
+	// Leader 节点与集群其他节点的连通是否超过半数
 	MsgCheckQuorum    MessageType = 12
+	// Leader 节点转移一般是我们指定一个特定的节点作为下一个任期的 Leader 节点, 当前 Leader 节点会选择一个合适的节点, 然后
+	// 发送 MsgTransferLeader 消息（本地消息）.
 	MsgTransferLeader MessageType = 13
+	// Follower 节点接收到 Leader 节点发来的 MsgTimeoutNow 消息, 这会导致 Follower 节点的选举计时器立即过期, 并发起新一轮选举
 	MsgTimeoutNow     MessageType = 14
+	// 客户端的读请求需要读到集群中最新的、已提交的数据（linearizability 语义）, 而不能读到老数据. Leader 节点保存了整个
+	// 集群中最新的数据, 如果只读请求只访问 Leader 节点, 则 Leader 节点可以直接将结果返回给客户端, 但是在网络分区场景下,
+	// 一个旧的 Leader 节点就可能返回旧数据.
+	//
+	// etcd-raft 模块使用 MsgReadIndex 消息来解决上述问题: 当 Leader 节点收到客户端的只读请求时, 会将当前请求的编号记录
+	// 下来, 在返回数据给客户端之前, Leader 节点需要先确定自己是否依然是当前集群的 Leader 节点（通过心跳方式）, 在确定其
+	// 依然是 Leader 节点后, 就可以说明该节点可以响应该请求, 只需要等待当前 Leader 节点的提交位置（即 raftLog.committed）
+	// 到达或是超过只读请求的编号即可向客户端返回响应.
+	//
+	// 在 etcd-raft 模块中, 客户端发往集群的只读请求使用 MsgReadIndex 消息表示, 其中只读请求有两种模式, 分别是 ReadOnlySafe
+	// 和 ReadOnlyLeaseBased.
 	MsgReadIndex      MessageType = 15
 	MsgReadIndexResp  MessageType = 16
 	MsgPreVote        MessageType = 17
@@ -219,8 +240,8 @@ func (ConfChangeTransition) EnumDescriptor() ([]byte, []int) { return fileDescri
 type ConfChangeType int32
 
 const (
-	ConfChangeAddNode        ConfChangeType = 0
-	ConfChangeRemoveNode     ConfChangeType = 1
+	ConfChangeAddNode        ConfChangeType = 0 // 添加节点
+	ConfChangeRemoveNode     ConfChangeType = 1 // 移除节点
 	ConfChangeUpdateNode     ConfChangeType = 2
 	ConfChangeAddLearnerNode ConfChangeType = 3
 )
@@ -256,10 +277,16 @@ func (x *ConfChangeType) UnmarshalJSON(data []byte) error {
 }
 func (ConfChangeType) EnumDescriptor() ([]byte, []int) { return fileDescriptorRaft, []int{3} }
 
+// Entry 记录对应一个独立的操作. 节点间传递的是消息(Message), 每条消息中可携带多条 Entry 记录.
+// 另外, 在每个节点中记录的本地 Log 的基本单位也是 Entry 记录.
 type Entry struct {
+	// 该 Entry 所在的任期号
 	Term             uint64    `protobuf:"varint,2,opt,name=Term" json:"Term"`
+	// 该 Entry 对应的索引号
 	Index            uint64    `protobuf:"varint,3,opt,name=Index" json:"Index"`
+	// 该 Entry 记录的类型. 该字段有两个可选项: EntryNormal, 表示普通的数据操作; EntryConfChange, 表示集群的表更操作.
 	Type             EntryType `protobuf:"varint,1,opt,name=Type,enum=raftpb.EntryType" json:"Type"`
+	// 具体操作使用的数据
 	Data             []byte    `protobuf:"bytes,4,opt,name=Data" json:"Data,omitempty"`
 	XXX_unrecognized []byte    `json:"-"`
 }
@@ -270,8 +297,11 @@ func (*Entry) ProtoMessage()               {}
 func (*Entry) Descriptor() ([]byte, []int) { return fileDescriptorRaft, []int{0} }
 
 type SnapshotMetadata struct {
+	// 创建快照时的集群的状态信息
 	ConfState        ConfState `protobuf:"bytes,1,opt,name=conf_state,json=confState" json:"conf_state"`
+	// 当前 SnapShot 中保存的最后一条 Entry 记录的 Index 值
 	Index            uint64    `protobuf:"varint,2,opt,name=index" json:"index"`
+	// 当前 SnapShot 中保存的最后一条 Entry 记录的 Term 值
 	Term             uint64    `protobuf:"varint,3,opt,name=term" json:"term"`
 	XXX_unrecognized []byte    `json:"-"`
 }
@@ -292,18 +322,37 @@ func (m *Snapshot) String() string            { return proto.CompactTextString(m
 func (*Snapshot) ProtoMessage()               {}
 func (*Snapshot) Descriptor() ([]byte, []int) { return fileDescriptorRaft, []int{2} }
 
+// Message 是所有消息的抽像, 包括了各种类型消息所需要的字段.
 type Message struct {
+	// 该字段定义了消息的类型, etcd-raft 的实现中就是通过该字段区分不同的消息并进行分类处理
 	Type             MessageType `protobuf:"varint,1,opt,name=type,enum=raftpb.MessageType" json:"type"`
+	// 消息的目标节点 ID.
 	To               uint64      `protobuf:"varint,2,opt,name=to" json:"to"`
+	// 发送消息的节点 ID. 在集群中, 每个节点都拥有一个唯一 ID 作为标识.
 	From             uint64      `protobuf:"varint,3,opt,name=from" json:"from"`
+	// 发送消息的节点的 Term 值(任期号). 如果 Term 值为 0, 则为本地消息, 在 etcd-raft 模块的实现中, 对本地消息
+	// 进行特殊处理. 如 MsgHup 类型消息就是本地消息一种.
 	Term             uint64      `protobuf:"varint,4,opt,name=term" json:"term"`
+	// 该消息携带的第一条 Entry 记录的 Term 值
 	LogTerm          uint64      `protobuf:"varint,5,opt,name=logTerm" json:"logTerm"`
+	// 记录了一个索引值, 该索引值的具体含义与消息的类型相关. 如 MsgApp 消息的 Index 字段保存了其携带的 Entry
+	// 记录（即 Entries）中前一条记录的 Index 值; 而 MsgAppResp 消息的 Index 字段则是 Follower 节点提示 Leader
+	// 节点下次从哪个位置开始发送 Entry 记录.
 	Index            uint64      `protobuf:"varint,6,opt,name=index" json:"index"`
+	// 如果是 MsgApp 类型的消息, 则该字段保存了 Leader 节点复制到 Follower 节点的 Entry 记录.
 	Entries          []Entry     `protobuf:"bytes,7,rep,name=entries" json:"entries"`
+	// 消息发送节点的提交位置（commitIndex）
 	Commit           uint64      `protobuf:"varint,8,opt,name=commit" json:"commit"`
+	// 在传输快照时, 该字段保存了快照数据
 	Snapshot         Snapshot    `protobuf:"bytes,9,opt,name=snapshot" json:"snapshot"`
+	// 主要用于响应类型的消息, 表示是否拒绝收到的消息. 如, Follower 节点收到 Leader 节点发来的 MsgApp 消息,
+	// 如果 Follower 节点发现 MsgApp 消息携带的 Entry 记录并不能直接追加到本地的 raftLog 中, 则会将响应消息
+	// 的 Reject 字段设置为 true, 并且会在 RejectHint 字段中记录合适的 Entry 索引值, 供 Leader 节点参考.
 	Reject           bool        `protobuf:"varint,10,opt,name=reject" json:"reject"`
+	// 在 Follower 节点拒绝 Leader 节点的消息之后, 会在该字段记录一个 Entry 索引值（对应 Follower 节点的
+	// raftLog 中最后一条记录的索引值）供 Leader 节点参考.
 	RejectHint       uint64      `protobuf:"varint,11,opt,name=rejectHint" json:"rejectHint"`
+	// 消息携带的一些上下文信息. 如, 该消息是否与 Leader 节点转移相关.
 	Context          []byte      `protobuf:"bytes,12,opt,name=context" json:"context,omitempty"`
 	XXX_unrecognized []byte      `json:"-"`
 }
@@ -314,8 +363,11 @@ func (*Message) ProtoMessage()               {}
 func (*Message) Descriptor() ([]byte, []int) { return fileDescriptorRaft, []int{3} }
 
 type HardState struct {
+	// 当前节点任期号
 	Term             uint64 `protobuf:"varint,1,opt,name=term" json:"term"`
+	// 当前节点在该任期中将选票投给了哪个节点
 	Vote             uint64 `protobuf:"varint,2,opt,name=vote" json:"vote"`
+	// 当前节点的 raftLog 已提交 Entry 记录的位置（即最后一条已提交记录的索引值）
 	Commit           uint64 `protobuf:"varint,3,opt,name=commit" json:"commit"`
 	XXX_unrecognized []byte `json:"-"`
 }
@@ -328,6 +380,8 @@ func (*HardState) Descriptor() ([]byte, []int) { return fileDescriptorRaft, []in
 type ConfState struct {
 	// The voters in the incoming config. (If the configuration is not joint,
 	// then the outgoing config is empty).
+	//
+	// 集群多节点情况下, 保存其他几个节点的 ID
 	Voters []uint64 `protobuf:"varint,1,rep,name=voters" json:"voters,omitempty"`
 	// The learners in the incoming config.
 	Learners []uint64 `protobuf:"varint,2,rep,name=learners" json:"learners,omitempty"`
@@ -349,6 +403,7 @@ func (*ConfState) ProtoMessage()               {}
 func (*ConfState) Descriptor() ([]byte, []int) { return fileDescriptorRaft, []int{5} }
 
 type ConfChange struct {
+	// 集群配置变更的类型
 	Type    ConfChangeType `protobuf:"varint,2,opt,name=type,enum=raftpb.ConfChangeType" json:"type"`
 	NodeID  uint64         `protobuf:"varint,3,opt,name=node_id,json=nodeId" json:"node_id"`
 	Context []byte         `protobuf:"bytes,4,opt,name=context" json:"context,omitempty"`
@@ -367,7 +422,9 @@ func (*ConfChange) Descriptor() ([]byte, []int) { return fileDescriptorRaft, []i
 // ConfChangeSingle is an individual configuration change operation. Multiple
 // such operations can be carried out atomically via a ConfChangeV2.
 type ConfChangeSingle struct {
+	// 处理类型
 	Type             ConfChangeType `protobuf:"varint,1,opt,name=type,enum=raftpb.ConfChangeType" json:"type"`
+	// 待处理的节点
 	NodeID           uint64         `protobuf:"varint,2,opt,name=node_id,json=nodeId" json:"node_id"`
 	XXX_unrecognized []byte         `json:"-"`
 }

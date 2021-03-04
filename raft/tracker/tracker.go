@@ -117,10 +117,15 @@ func (c *Config) Clone() Config {
 type ProgressTracker struct {
 	Config
 
+	// Leader 节点会记录集群中其他节点的日志复制情况（NextIndex 和 MatchIndex）. 在 etcd-raft 模块中,
+	// 每个 Follower 节点对应的 NextIndex 值和 MatchIndex 值都封装在 Progress 实例中, 除此之外, 每个
+	// Progress 实例中还封装了对应 Follower 节点的相关信息.
 	Progress ProgressMap
 
+	// 记录投票情况, key 为节点 ID, value 为该节点对应的投票情况
 	Votes map[uint64]bool
 
+	// 表示已经发送出去且未收到响应的最大消息个数.
 	MaxInflight int
 }
 
@@ -155,6 +160,8 @@ func (p *ProgressTracker) ConfState() pb.ConfState {
 
 // IsSingleton returns true if (and only if) there is only one voting member
 // (i.e. the leader) in the current configuration.
+//
+// IsSingleton 检测当前是否为集群模式（即多节点）
 func (p *ProgressTracker) IsSingleton() bool {
 	return len(p.Voters[0]) == 1 && len(p.Voters[1]) == 0
 }
@@ -174,6 +181,8 @@ func (l matchAckIndexer) AckedIndex(id uint64) (quorum.Index, bool) {
 
 // Committed returns the largest log index known to be committed based on what
 // the voting members of the group have acknowledged.
+//
+// Committed 返回集群中半数节点已提交的 Entry 记录的最大索引值
 func (p *ProgressTracker) Committed() uint64 {
 	return uint64(p.Voters.CommittedIndex(matchAckIndexer(p.Progress)))
 }
@@ -212,19 +221,28 @@ func (p *ProgressTracker) Visit(f func(id uint64, pr *Progress)) {
 
 // QuorumActive returns true if the quorum is active from the view of the local
 // raft state machine. Otherwise, it returns false.
+//
+// QuorumActive 检测当前节点是否与集群中大部分节点连通
 func (p *ProgressTracker) QuorumActive() bool {
 	votes := map[uint64]bool{}
+	// 遍历集群中全部节点对应的 Progress 实例
 	p.Visit(func(id uint64, pr *Progress) {
 		if pr.IsLearner {
 			return
 		}
+		// 收集集群中所有节点的 Progress.RecentActive.
+		// 参见 MsgAppResp 消息的处理过程, 当 Leader 节点接收到 Follower 节点返回的 MsgAppResp 消息时, 会将其对应的
+		// Progress.RecentActive 设置为 true.
 		votes[id] = pr.RecentActive
 	})
 
+	// 检测与当前节点连通的节点个数是否超过半数
 	return p.Voters.VoteResult(votes) == quorum.VoteWon
 }
 
 // VoterNodes returns a sorted slice of voters.
+//
+// VoterNodes 返回经过排序后的 voters 切片，即集群的所有节点 ID
 func (p *ProgressTracker) VoterNodes() []uint64 {
 	m := p.Voters.IDs()
 	nodes := make([]uint64, 0, len(m))
@@ -250,6 +268,7 @@ func (p *ProgressTracker) LearnerNodes() []uint64 {
 
 // ResetVotes prepares for a new round of vote counting via recordVote.
 func (p *ProgressTracker) ResetVotes() {
+	// 清空 Votes 字段
 	p.Votes = map[uint64]bool{}
 }
 
@@ -269,6 +288,8 @@ func (p *ProgressTracker) TallyVotes() (granted int, rejected int, _ quorum.Vote
 	// contains members no longer part of the configuration. This doesn't really
 	// matter in the way the numbers are used (they're informational), but might
 	// as well get it right.
+	//
+	// 统计投票结果并返回
 	for id, pr := range p.Progress {
 		if pr.IsLearner {
 			continue
@@ -283,6 +304,7 @@ func (p *ProgressTracker) TallyVotes() (granted int, rejected int, _ quorum.Vote
 			rejected++
 		}
 	}
+	// 计算投票结果, 赢得了选票还是失败
 	result := p.Voters.VoteResult(p.Votes)
 	return granted, rejected, result
 }

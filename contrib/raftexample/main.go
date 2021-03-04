@@ -38,6 +38,7 @@ func main() {
 	getSnapshot := func() ([]byte, error) { return kvs.getSnapshot() }
 	commitC, errorC, snapshotterReady := newRaftNode(*id, strings.Split(*cluster, ","), *join, getSnapshot, proposeC, confChangeC)
 
+	// 这里会先监听 snapshotterReady 通道, 等待 snapshotter 实例创建完成
 	kvs = newKVStore(<-snapshotterReady, proposeC, commitC, errorC)
 
 	// the key-value http handler will propose updates to raft

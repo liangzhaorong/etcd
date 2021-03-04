@@ -19,17 +19,27 @@ package tracker
 // use Full() to check whether more messages can be sent, call Add() whenever
 // they are sending a new append, and release "quota" via FreeLE() whenever an
 // ack is received.
+//
+// Inflights 的主要记录当前节点已发出但未收到响应的 MsgApp 消息.
 type Inflights struct {
 	// the starting index in the buffer
+	//
+	// buffer 数组是一个环形数组, start 字段记录 buffer 中第一条 MsgApp 消息的下标.
 	start int
 	// number of inflights in the buffer
+	//
+	// 当前 Inflights 实例中记录的 MsgApp 消息个数
 	count int
 
 	// the size of the buffer
+	//
+	// 当前 inflights 实例中能够记录的 MsgApp 消息个数的上限.
 	size int
 
 	// buffer contains the index of the last entry
 	// inside one message.
+	//
+	// 用来记录 MsgApp 消息相关信息的数组, 其中记录的是 MsgApp 消息中最后一条 Entry 记录的索引值.
 	buffer []uint64
 }
 
@@ -52,19 +62,27 @@ func (in *Inflights) Clone() *Inflights {
 // dispatched. Full() must be called prior to Add() to verify that there is room
 // for one more message, and consecutive calls to add Add() must provide a
 // monotonic sequence of indexes.
+//
+// Add 记录已发送出去的 MsgApp 消息
 func (in *Inflights) Add(inflight uint64) {
+	// 检测当前 buffer 数组是否已经被填充满了
 	if in.Full() {
 		panic("cannot add into a Full inflights")
 	}
+	// 获取新增消息的下标
 	next := in.start + in.count
 	size := in.size
+	// 环形队列
 	if next >= size {
 		next -= size
 	}
+	// 初始化时的 buffer 数组较短, 随着使用会不断进行扩容（两倍），但其扩容的上限为 size.
 	if next >= len(in.buffer) {
 		in.grow()
 	}
+	// 在 next 位置记录 MsgApp 消息中最后一条 Entry 记录的索引值
 	in.buffer[next] = inflight
+	// 递增 count 字段
 	in.count++
 }
 
@@ -84,7 +102,11 @@ func (in *Inflights) grow() {
 }
 
 // FreeLE frees the inflights smaller or equal to the given `to` flight.
+//
+// FreeLE 当 Leader 节点收到 MsgAppResp 消息时, 会通过该函数将指定消息及其之前的消息全部清空, 释放 inflights 空间,
+// 让后面的消息继续发送.
 func (in *Inflights) FreeLE(to uint64) {
+	// 检测当前 inflights 是否为空, 以及参数 to 是否有效
 	if in.count == 0 || to < in.buffer[in.start] {
 		// out of the left side of the window
 		return
@@ -92,20 +114,24 @@ func (in *Inflights) FreeLE(to uint64) {
 
 	idx := in.start
 	var i int
+	// 从 start 开始遍历 buffer
 	for i = 0; i < in.count; i++ {
+		// 查找第一个大于指定索引值的位置
 		if to < in.buffer[idx] { // found the first large inflight
 			break
 		}
 
 		// increase index and maybe rotate
 		size := in.size
+		// 因为是环形队列, 如果 idx 越界, 则从 0 开始继续遍历
 		if idx++; idx >= size {
 			idx -= size
 		}
 	}
 	// free i inflights and set new start index
-	in.count -= i
-	in.start = idx
+	in.count -= i  // 记录了此次释放的消息个数
+	in.start = idx // 从 start~idx 的所有消息都被释放（注意, 是环形队列）
+	// inflights 中全部消息都被清空了, 则重置 start
 	if in.count == 0 {
 		// inflights is empty, reset the start index so that we don't grow the
 		// buffer unnecessarily.
@@ -115,9 +141,13 @@ func (in *Inflights) FreeLE(to uint64) {
 
 // FreeFirstOne releases the first inflight. This is a no-op if nothing is
 // inflight.
+//
+// FreeFirstOne 只释放其中记录的第一条 MsgApp 消息
 func (in *Inflights) FreeFirstOne() { in.FreeLE(in.buffer[in.start]) }
 
 // Full returns true if no more messages can be sent at the moment.
+//
+// Full 检测当前 inflights 实例是否已满
 func (in *Inflights) Full() bool {
 	return in.count == in.size
 }

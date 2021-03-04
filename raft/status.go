@@ -26,18 +26,23 @@ import (
 type Status struct {
 	BasicStatus
 	Config   tracker.Config
+	// 记录集群中每个节点对应的 Progress 实例
 	Progress map[uint64]tracker.Progress
 }
 
 // BasicStatus contains basic information about the Raft peer. It does not allocate.
 type BasicStatus struct {
+	// 当前节点的 ID
 	ID uint64
 
+	// 内嵌 HardState 和 SoftState
 	pb.HardState
 	SoftState
 
+	// 已应用的 Entry 记录的最大索引值
 	Applied uint64
 
+	// 当前正在执行 Leader 转移的目标节点 ID
 	LeadTransferee uint64
 }
 
@@ -56,19 +61,29 @@ func getProgressCopy(r *raft) map[uint64]tracker.Progress {
 
 func getBasicStatus(r *raft) BasicStatus {
 	s := BasicStatus{
+		// 当前节点的 ID
 		ID:             r.id,
+		// 当前正在进行 Leader 节点转移的目标节点 ID（若有的话）
 		LeadTransferee: r.leadTransferee,
 	}
+	// 从底层的 raft 实例获取 HardState 实例
 	s.HardState = r.hardState()
+	// 从底层的 raft 实例获取 SoftState 实例
 	s.SoftState = *r.softState()
+	// 获取底层的 raftLog 中记录已应用的位置
 	s.Applied = r.raftLog.applied
 	return s
 }
 
 // getStatus gets a copy of the current raft status.
+//
+// getStatus 获取当前 raft 状态的副本
 func getStatus(r *raft) Status {
+	// 创建 Status 实例
 	var s Status
+	// 创建 BasicStatus 实例, 并根据底层 raft 信息初始化该实例
 	s.BasicStatus = getBasicStatus(r)
+	// 如果当前节点是 Leader 状态, 则将集群中每个节点对应的 Progress 实例封装到 Status 实例中
 	if s.RaftState == StateLeader {
 		s.Progress = getProgressCopy(r)
 	}
