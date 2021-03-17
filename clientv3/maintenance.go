@@ -34,6 +34,8 @@ type (
 	MoveLeaderResponse pb.MoveLeaderResponse
 )
 
+// Maintenance 接口提供了获取 Alarm 列表、关闭 Alarm 的功能, 该接口还提供了读取指定节点状态的功能、
+// 触发指定节点进行压缩的功能, 以及读取指定节点快照的功能.
 type Maintenance interface {
 	// AlarmList gets all active alarms.
 	AlarmList(ctx context.Context) (*AlarmResponse, error)

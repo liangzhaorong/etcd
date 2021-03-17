@@ -23,6 +23,8 @@ import (
 
 // LeaderStats is used by the leader in an etcd cluster, and encapsulates
 // statistics about communication with its followers
+//
+// LeaderStats 由 etcd 集群中的 Leader 使用, 封装了其与 Follower 节点进行通信的统计信息
 type LeaderStats struct {
 	leaderStats
 	sync.Mutex

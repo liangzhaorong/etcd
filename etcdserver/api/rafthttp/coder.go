@@ -23,5 +23,6 @@ type encoder interface {
 
 type decoder interface {
 	// decode decodes the message from an input stream.
+	// 从底层连接中读取数据, 并反序列化成 raftpb.Message 实例
 	decode() (raftpb.Message, error)
 }

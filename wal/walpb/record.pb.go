@@ -36,9 +36,13 @@ var _ = math.Inf
 // proto package needs to be updated.
 const _ = proto.ProtoPackageIsVersion2 // please upgrade the proto package
 
+// Record 表示 WAL 日志文件中的日志记录
 type Record struct {
+	// 表示该 Record 实例的类型
 	Type             int64  `protobuf:"varint,1,opt,name=type" json:"type"`
+	// 记录该 Record 实例的校验码
 	Crc              uint32 `protobuf:"varint,2,opt,name=crc" json:"crc"`
+	// 记录真正的日志数据
 	Data             []byte `protobuf:"bytes,3,opt,name=data" json:"data,omitempty"`
 	XXX_unrecognized []byte `json:"-"`
 }
@@ -63,6 +67,7 @@ func init() {
 	proto.RegisterType((*Record)(nil), "walpb.Record")
 	proto.RegisterType((*Snapshot)(nil), "walpb.Snapshot")
 }
+// Marshal 创建一个新的缓冲区, 来缓存序列化后的数据
 func (m *Record) Marshal() (dAtA []byte, err error) {
 	size := m.Size()
 	dAtA = make([]byte, size)

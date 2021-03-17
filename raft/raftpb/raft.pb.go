@@ -923,6 +923,7 @@ func (m *Snapshot) Size() (n int) {
 	return n
 }
 
+// Size 返回消息的总字节数
 func (m *Message) Size() (n int) {
 	var l int
 	_ = l

@@ -150,7 +150,9 @@ func (enc *msgAppV2Encoder) encode(m *raftpb.Message) error {
 }
 
 type msgAppV2Decoder struct {
+	// 对端节点返回的响应 Body
 	r             io.Reader
+	// 当前节点 ID 和对端节点的 ID
 	local, remote types.ID
 
 	term      uint64

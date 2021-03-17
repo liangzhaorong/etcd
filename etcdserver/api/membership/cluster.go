@@ -46,18 +46,30 @@ const maxLearners = 1
 type RaftCluster struct {
 	lg *zap.Logger
 
+	// 当前节点的 ID
 	localID types.ID
+	// 当前集群的 ID
 	cid     types.ID
+	// 当前集群的 token
 	token   string
 
+	// etcd v2 版本的持久化存储
 	v2store v2store.Store
+	// etcd v3 版本的持久化存储
 	be      backend.Backend
 
+	// 内嵌 sync.Mutex, 用于保护下面的字段
 	sync.Mutex // guards the fields below
 	version    *semver.Version
+	// 集群中每个节点都会有一个唯一 ID, 同时对应一个 Member 实例, 该 map
+	// 中记录了节点 ID 与其 Member 实例的对应关系. 在 Member 中记录了对
+	// 应节点暴露给集群其他节点的 URL 地址（RaftAttributes.PeerURLs）及
+	// 与客户端交互的 URL 地址（Attributes.ClientURLs）.
 	members    map[types.ID]*Member
 	// removed contains the ids of removed members in the cluster.
 	// removed id cannot be reused.
+	//
+	// 从当前集群中移除的节点的 ID, 在后续添加新节点时, 这些 ID 不能被再次使用.
 	removed map[types.ID]bool
 }
 
@@ -72,8 +84,12 @@ type ConfigChangeContext struct {
 
 // NewClusterFromURLsMap creates a new raft cluster using provided urls map. Currently, it does not support creating
 // cluster with raft learner member.
+//
+// NewClusterFromURLsMap urlsmap 参数中封装了集群中每个节点的名称与其提供的 URL 之间的映射, 在 NewClusterFromURLsMap()
+// 函数中会根据该映射关系创建相应的 Member 实例和 RaftCluster 实例.
 func NewClusterFromURLsMap(lg *zap.Logger, token string, urlsmap types.URLsMap) (*RaftCluster, error) {
-	c := NewCluster(lg, token)
+	c := NewCluster(lg, token) // 创建 RaftCluster 实例
+	// 遍历集群中节点的地址, 并创建对应的 Member 实例
 	for name, urls := range urlsmap {
 		m := NewMember(name, urls, token, nil)
 		if _, ok := c.members[m.ID]; ok {
@@ -84,6 +100,7 @@ func NewClusterFromURLsMap(lg *zap.Logger, token string, urlsmap types.URLsMap) 
 		}
 		c.members[m.ID] = m
 	}
+	// 通过所有节点的 ID, 为集群生成一个 ID
 	c.genID()
 	return c, nil
 }
@@ -108,8 +125,9 @@ func NewCluster(lg *zap.Logger, token string) *RaftCluster {
 
 func (c *RaftCluster) ID() types.ID { return c.cid }
 
+// Members 返回当前集群中经过排序的所有 Member 实例的副本
 func (c *RaftCluster) Members() []*Member {
-	c.Lock()
+	c.Lock() // 加互斥锁
 	defer c.Unlock()
 	var ms MembersByID
 	for _, m := range c.members {
@@ -119,6 +137,7 @@ func (c *RaftCluster) Members() []*Member {
 	return []*Member(ms)
 }
 
+// Member 返回指定节点 ID 对应的 Member 实例的副本
 func (c *RaftCluster) Member(id types.ID) *Member {
 	c.Lock()
 	defer c.Unlock()
@@ -178,6 +197,8 @@ func (c *RaftCluster) IsIDRemoved(id types.ID) bool {
 
 // PeerURLs returns a list of all peer addresses.
 // The returned list is sorted in ascending lexicographical order.
+//
+// PeerURLs 将所有 Member 实例中的 PeerURLs 保存到一个集群中后返回（经过排序）
 func (c *RaftCluster) PeerURLs() []string {
 	c.Lock()
 	defer c.Unlock()
@@ -220,6 +241,7 @@ func (c *RaftCluster) String() string {
 	return b.String()
 }
 
+// genID 通过所有节点的 ID, 为集群生成一个 ID
 func (c *RaftCluster) genID() {
 	mIDs := c.MemberIDs()
 	b := make([]byte, 8*len(mIDs))
@@ -278,14 +300,23 @@ func (c *RaftCluster) Recover(onSet func(*zap.Logger, *semver.Version)) {
 
 // ValidateConfigurationChange takes a proposed ConfChange and
 // ensures that it is still valid.
+//
+// ValidateConfigurationChange 检测待修改的节点信息是否合法
 func (c *RaftCluster) ValidateConfigurationChange(cc raftpb.ConfChange) error {
+	// 从 v2 存储中获取当前集群中存在的节点信息（members 变量）, 以及已移除的节点信息（removed 变量）.
+	// 这里 members 的类型是 map[types.ID]*Member, removed 的类型是 map[types.ID]bool.
+	// members 的内容实际上记录在 v2 存储中的 "/0/members" 节点下, removed 的内容记录在 v2 存储的
+	// "/0/removed_members" 节点下, membersFromStore() 方法就是从这两个节点下查找相应信息的.
 	members, removed := membersFromStore(c.lg, c.v2store)
-	id := types.ID(cc.NodeID)
+	id := types.ID(cc.NodeID) // 从 ConfChange 实例中获取待操作的节点 id
+	// 检测该节点是否在 removed 中, 如果存在, 则返回错误
 	if removed[id] {
 		return ErrIDRemoved
 	}
+	// 根据 ConfChange 的类型进行分类处理
 	switch cc.Type {
 	case raftpb.ConfChangeAddNode, raftpb.ConfChangeAddLearnerNode:
+		// 将 ConfChange.Context 中的数据反序列化成 ConfigChangeContext 实例
 		confChangeContext := new(ConfigChangeContext)
 		if err := json.Unmarshal(cc.Context, confChangeContext); err != nil {
 			if c.lg != nil {
@@ -303,16 +334,19 @@ func (c *RaftCluster) ValidateConfigurationChange(cc raftpb.ConfChange) error {
 				return ErrMemberNotLearner
 			}
 		} else { // adding a new member
+			// 检测新增节点是否在 members 中, 如果存在, 则返回错误
 			if members[id] != nil {
 				return ErrIDExists
 			}
 
 			urls := make(map[string]bool)
+			// 遍历当前集群中全部的 Member 实例, 并将每个节点暴露的 URL 记录到 urls 这个 map 中
 			for _, m := range members {
 				for _, u := range m.PeerURLs {
 					urls[u] = true
 				}
 			}
+			// 遍历新增节点提供的 URL 是否与集群中已有节点提供的 URL 地址冲突
 			for _, u := range confChangeContext.Member.PeerURLs {
 				if urls[u] {
 					return ErrPeerURLexists
@@ -332,15 +366,18 @@ func (c *RaftCluster) ValidateConfigurationChange(cc raftpb.ConfChange) error {
 			}
 		}
 	case raftpb.ConfChangeRemoveNode:
+		// 检测待删除节点是否存在于 members 中
 		if members[id] == nil {
 			return ErrIDNotFound
 		}
 
 	case raftpb.ConfChangeUpdateNode:
+		// 检测待更新节点是否存在于 members 中
 		if members[id] == nil {
 			return ErrIDNotFound
 		}
 		urls := make(map[string]bool)
+		// 检测节点更新之后提供的 URL 地址是否与集群中其他节点提供的 URL 地址冲突
 		for _, m := range members {
 			if m.ID == id {
 				continue
@@ -380,12 +417,15 @@ func (c *RaftCluster) AddMember(m *Member) {
 	c.Lock()
 	defer c.Unlock()
 	if c.v2store != nil {
+		// 将 Member 序列化后保存到 v2 存储中
 		mustSaveMemberToStore(c.v2store, m)
 	}
 	if c.be != nil {
+		// 将 Member 序列化后保存到 v3 存储中
 		mustSaveMemberToBackend(c.be, m)
 	}
 
+	// 将该 Member 实例与其 ID 的对应关系存储到 RaftCluster.members 这个 map 中
 	c.members[m.ID] = m
 
 	if c.lg != nil {
@@ -757,24 +797,35 @@ func clusterVersionFromStore(lg *zap.Logger, st v2store.Store) *semver.Version {
 // with the existing cluster. If the validation succeeds, it assigns the IDs
 // from the existing cluster to the local cluster.
 // If the validation fails, an error will be returned.
+//
+// ValidateClusterAndAssignIDs 将从远端获取到 RaftCluster 实例（即 existing）与本地生成
+// 的 RaftCluster 实例（即 local）进行比较.
 func ValidateClusterAndAssignIDs(lg *zap.Logger, local *RaftCluster, existing *RaftCluster) error {
+	// 获取本地 RaftCluster 实例和远端 RaftCluster 实例中记录的 Member 实例, 需要注意的是,
+	// 这里返回的是 RaftCluster.members 字段中记录的 Member 实例的副本.
 	ems := existing.Members()
 	lms := local.Members()
+	// 首先, 比较 ems 和 lms 的长度是否相等, 若不相等, 则直接返回错误
 	if len(ems) != len(lms) {
 		return fmt.Errorf("member count is unequal")
 	}
+	// 对 ems 和 lms 进行排序
 	sort.Sort(MembersByPeerURLs(ems))
 	sort.Sort(MembersByPeerURLs(lms))
 
 	ctx, cancel := context.WithTimeout(context.TODO(), 30*time.Second)
 	defer cancel()
+	// 遍历 ems, 检测 lms 中对应节点暴露的 URL 地址是否匹配
 	for i := range ems {
 		if ok, err := netutil.URLStringsEqual(ctx, lg, ems[i].PeerURLs, lms[i].PeerURLs); !ok {
 			return fmt.Errorf("unmatched member while checking PeerURLs (%v)", err)
 		}
+		// 记录匹配的 Member 实例
 		lms[i].ID = ems[i].ID
 	}
+	// 清空本地 RaftCluster.members 字段
 	local.members = make(map[types.ID]*Member)
+	// 更新本地 RaftCluster.members 字段
 	for _, m := range lms {
 		local.members[m.ID] = m
 	}

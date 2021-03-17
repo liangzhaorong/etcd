@@ -48,15 +48,20 @@ func newPeerHandler(
 	leaseHandler http.Handler,
 	hashKVHandler http.Handler,
 ) http.Handler {
+	// 创建 peerMembersHandler 实例, 在初始化 EtcdServer 实例时会从远端节点请求当前集群的信息,
+	// 而远端节点就是通过该 Handler 对此请求进行响应的.
 	peerMembersHandler := newPeerMembersHandler(lg, s.Cluster())
 	peerMemberPromoteHandler := newPeerMemberPromoteHandler(lg, s)
 
+	// 创建 http 复合路由器
 	mux := http.NewServeMux()
+	// 使用默认的 Handler, 直接返回 404 响应
 	mux.HandleFunc("/", http.NotFound)
 	mux.Handle(rafthttp.RaftPrefix, raftHandler)
 	mux.Handle(rafthttp.RaftPrefix+"/", raftHandler)
 	mux.Handle(peerMembersPath, peerMembersHandler)
 	mux.Handle(peerMemberPromotePrefix, peerMemberPromoteHandler)
+	// 初始化处理 Lease 的 Handler 实例
 	if leaseHandler != nil {
 		mux.Handle(leasehttp.LeasePrefix, leaseHandler)
 		mux.Handle(leasehttp.LeaseInternalPrefix, leaseHandler)
@@ -64,6 +69,7 @@ func newPeerHandler(
 	if hashKVHandler != nil {
 		mux.Handle(etcdserver.PeerHashKVPath, hashKVHandler)
 	}
+	// 注册 versionHandler, 用于返回当前节点的版本信息
 	mux.HandleFunc(versionPath, versionHandler(s.Cluster(), serveVersion))
 	return mux
 }

@@ -42,8 +42,10 @@ func NewApplierV2(lg *zap.Logger, s v2store.Store, c *membership.RaftCluster) Ap
 	return &applierV2store{lg: lg, store: s, cluster: c}
 }
 
+// applierV2store 结构体实现了 ApplierV2 接口.
 type applierV2store struct {
 	lg      *zap.Logger
+	// 指向当前节点的 v2 存储
 	store   v2store.Store
 	cluster *membership.RaftCluster
 }
@@ -62,23 +64,32 @@ func (a *applierV2store) Post(r *RequestV2) Response {
 }
 
 func (a *applierV2store) Put(r *RequestV2) Response {
+	// 根据请求内容创建 TTLOptionSet 实例, 其中会设置节点的超时时间、此次请求是否为刷新操作
 	ttlOptions := r.TTLOptions()
+	// 修改节点之前是否存在
 	exists, existsSet := pbutil.GetBool(r.PrevExist)
 	switch {
 	case existsSet:
 		if exists {
 			if r.PrevIndex == 0 && r.PrevValue == "" {
+				// 未提供 PreIndex 和 PreValue 信息, 则直接调用 Update() 方法更新节点值
 				return toResponse(a.store.Update(r.Path, r.Val, ttlOptions))
 			}
+			// 提供了 PreIndex 和 PreValue 信息, 则调用 CompareAndSwap() 方法更新节点值.
+			// CompareAndSwap() 方法会比较当前节点的 PreIndex 和 PreValue 是否与此次操作
+			// 提供的值相同, 然后决定是否修改.
 			return toResponse(a.store.CompareAndSwap(r.Path, r.PrevValue, r.PrevIndex, r.Val, ttlOptions))
 		}
 		return toResponse(a.store.Create(r.Path, r.Dir, r.Val, false, ttlOptions))
 	case r.PrevIndex > 0 || r.PrevValue != "":
 		return toResponse(a.store.CompareAndSwap(r.Path, r.PrevValue, r.PrevIndex, r.Val, ttlOptions))
 	default:
+		// 操作的节点是 "/0/members" 下的节点集群成员信息节点, 注意, 不会修改 v2 存储中对应的节点
 		if storeMemberAttributeRegexp.MatchString(r.Path) {
+			// 从节点的路径信息中解析得到节点 id
 			id := membership.MustParseMemberIDFromKey(path.Dir(r.Path))
 			var attr membership.Attributes
+			// 将节点值反序列化
 			if err := json.Unmarshal([]byte(r.Val), &attr); err != nil {
 				if a.lg != nil {
 					a.lg.Panic("failed to unmarshal", zap.String("value", r.Val), zap.Error(err))
@@ -86,19 +97,23 @@ func (a *applierV2store) Put(r *RequestV2) Response {
 					plog.Panicf("unmarshal %s should never fail: %v", r.Val, err)
 				}
 			}
+			// 更新 RaftCluster 中对应节点的信息
 			if a.cluster != nil {
 				a.cluster.UpdateAttributes(id, attr)
 			}
 			// return an empty response since there is no consumer.
 			return Response{}
 		}
+		// 操作的节点是 "/0/version"
 		if r.Path == membership.StoreClusterVersionKey() {
+			// 更新 RaftCluster 中的版本信息
 			if a.cluster != nil {
 				a.cluster.SetVersion(semver.Must(semver.NewVersion(r.Val)), api.UpdateCapability)
 			}
 			// return an empty response since there is no consumer.
 			return Response{}
 		}
+		// 如果不是上述两种节点, 则直接调用 Set() 方法更新对应节点值
 		return toResponse(a.store.Set(r.Path, r.Dir, r.Val, ttlOptions))
 	}
 }

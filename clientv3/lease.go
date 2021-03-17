@@ -105,6 +105,7 @@ func (e ErrKeepAliveHalted) Error() string {
 	return s
 }
 
+// Lease 接口负责租约相关的操作, 如, 新建和回收租约、为租约续期等.
 type Lease interface {
 	// Grant creates a new lease.
 	Grant(ctx context.Context, ttl int64) (*LeaseGrantResponse, error)

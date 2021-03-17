@@ -71,6 +71,7 @@ type Etcd struct {
 	Peers   []*peerListener
 	Clients []net.Listener
 	// a map of contexts for the servers that serves client requests.
+	// 该 map 用来记录 Client URL 与对应 serveCtx 实例的对应关系
 	sctxs            map[string]*serveCtx
 	metricsListeners []net.Listener
 
@@ -83,6 +84,9 @@ type Etcd struct {
 	closeOnce sync.Once
 }
 
+// peerListener 当前节点可以向集群中其他节点提供多个 URL 地址用于交互, 当前节点会为每个对外使用的 URL 地址
+// 创建一个 peerListener 实例, 其中封装了调用 NewPeerHander() 函数注册的 Handler, 以及启动和关闭 HTTP 服
+// 务的回调函数.
 type peerListener struct {
 	net.Listener
 	serve func() error
@@ -93,10 +97,13 @@ type peerListener struct {
 // The returned Etcd.Server is not guaranteed to have joined the cluster. Wait
 // on the Etcd.Server.ReadyNotify() channel to know when it completes and is ready for use.
 func StartEtcd(inCfg *Config) (e *Etcd, err error) {
+	// 检测配置是否有效
 	if err = inCfg.Validate(); err != nil {
 		return nil, err
 	}
+	// 标识是否正在提供服务
 	serving := false
+	// 创建 Etcd 实例
 	e = &Etcd{cfg: *inCfg, stopc: make(chan struct{})}
 	cfg := &e.cfg
 	defer func() {
@@ -119,6 +126,7 @@ func StartEtcd(inCfg *Config) (e *Etcd, err error) {
 			zap.Strings("listen-peer-urls", e.cfg.getLPURLs()),
 		)
 	}
+	// 初始化 Etcd.Peers 字段, 其中为每个 Peer URL 创建相应的 Listener 实例
 	if e.Peers, err = configurePeerListeners(cfg); err != nil {
 		return e, err
 	}
@@ -129,10 +137,12 @@ func StartEtcd(inCfg *Config) (e *Etcd, err error) {
 			zap.Strings("listen-client-urls", e.cfg.getLCURLs()),
 		)
 	}
+	// 初始化 Etcd.sctxs 字段, 其中为每个 Client URL 创建相应的 Listener 实例
 	if e.sctxs, err = configureClientListeners(cfg); err != nil {
 		return e, err
 	}
 
+	// 将 Etcd.sctxs 字段中记录的 Listener 实例添加到 Clients 字段中
 	for _, sctx := range e.sctxs {
 		e.Clients = append(e.Clients, sctx.l)
 	}
@@ -141,6 +151,7 @@ func StartEtcd(inCfg *Config) (e *Etcd, err error) {
 		urlsmap types.URLsMap
 		token   string
 	)
+	// 初始化集群中其他节点地址和自身的 token
 	memberInitialized := true
 	if !isMemberInitialized(cfg) {
 		memberInitialized = false
@@ -161,6 +172,7 @@ func StartEtcd(inCfg *Config) (e *Etcd, err error) {
 
 	backendFreelistType := parseBackendFreelistType(cfg.ExperimentalBackendFreelistType)
 
+	// 创建 ServerConfig 实例
 	srvcfg := etcdserver.ServerConfig{
 		Name:                        cfg.Name,
 		ClientURLs:                  cfg.ACUrls,
@@ -211,6 +223,7 @@ func StartEtcd(inCfg *Config) (e *Etcd, err error) {
 		WatchProgressNotifyInterval: cfg.ExperimentalWatchProgressNotifyInterval,
 	}
 	print(e.cfg.logger, *cfg, srvcfg, memberInitialized)
+	// 创建 EtcdServer 实例
 	if e.Server, err = etcdserver.NewServer(srvcfg); err != nil {
 		return e, err
 	}
@@ -228,6 +241,7 @@ func StartEtcd(inCfg *Config) (e *Etcd, err error) {
 			return e, err
 		}
 	}
+	// 启动 EtcdServer 实例
 	e.Server.Start()
 
 	if err = e.servePeers(); err != nil {
@@ -475,6 +489,7 @@ func configurePeerListeners(cfg *Config) (peers []*peerListener, err error) {
 		}
 	}
 
+	// 在 Config.LPUrls 中记录了当前节点与集群中其他节点交互的 URL 地址
 	peers = make([]*peerListener, len(cfg.LPUrls))
 	defer func() {
 		if err == nil {
@@ -530,6 +545,7 @@ func configurePeerListeners(cfg *Config) (peers []*peerListener, err error) {
 
 // configure peer handlers after rafthttp.Transport started
 func (e *Etcd) servePeers() (err error) {
+	// 注册 Peer Handler
 	ph := etcdhttp.NewPeerHandler(e.GetLogger(), e.Server)
 	var peerTLScfg *tls.Config
 	if !e.cfg.PeerTLSInfo.Empty() {
@@ -538,18 +554,25 @@ func (e *Etcd) servePeers() (err error) {
 		}
 	}
 
+	// 使用 Etcd.Peers 中记录的 Listener, 创建相应的 http.Server 实例
 	for _, p := range e.Peers {
 		u := p.Listener.Addr().String()
+		// 创建 grpc.Server 实例
 		gs := v3rpc.Server(e.Server, peerTLScfg)
 		m := cmux.New(p.Listener)
+		// 每个 Peer URL 对应的 grpc.Server 实例都会在单独的 goroutine 中启动
 		go gs.Serve(m.Match(cmux.HTTP2()))
+		// 为每个 URL 地址创建一个 http.Server
 		srv := &http.Server{
 			Handler:     grpcHandlerFunc(gs, ph),
 			ReadTimeout: 5 * time.Minute,
 			ErrorLog:    defaultLog.New(ioutil.Discard, "", 0), // do not log user error
 		}
+		// 每个 Peer URL 对应的 http.Server 实例都会在单独的 goroutine 中启动
 		go srv.Serve(m.Match(cmux.Any()))
+		// 设置启动 HTTP 服务端的回调函数, 并未真正启动
 		p.serve = func() error { return m.Serve() }
+		// 设置关闭 HTTP 服务的回调函数
 		p.close = func(ctx context.Context) error {
 			// gracefully shutdown http.Server
 			// close open listeners, idle connections
@@ -608,8 +631,10 @@ func configureClientListeners(cfg *Config) (sctxs map[string]*serveCtx, err erro
 		}
 	}
 
+	// 该 map 用来记录 Client URL 与对应 serveCtx 实例的对应关系
 	sctxs = make(map[string]*serveCtx)
 	for _, u := range cfg.LCUrls {
+		// 每个 Client URL 都对应一个 serveCtx 实例
 		sctx := newServeCtx(cfg.logger)
 		if u.Scheme == "http" || u.Scheme == "unix" {
 			if !cfg.ClientTLSInfo.Empty() {
@@ -647,6 +672,7 @@ func configureClientListeners(cfg *Config) (sctxs map[string]*serveCtx, err erro
 			continue
 		}
 
+		// 创建 Listener 实例
 		if sctx.l, err = net.Listen(network, addr); err != nil {
 			return nil, err
 		}
@@ -669,6 +695,7 @@ func configureClientListeners(cfg *Config) (sctxs map[string]*serveCtx, err erro
 			sctx.l = transport.LimitListener(sctx.l, int(fdLimit-reservedInternalFDNum))
 		}
 
+		// 根据不同的系统和协议, 对 sctx.l 中记录的  Listener 进行调整
 		if network == "tcp" {
 			if sctx.l, err = transport.NewKeepAliveListener(sctx.l, network, nil); err != nil {
 				return nil, err
@@ -690,6 +717,7 @@ func configureClientListeners(cfg *Config) (sctxs map[string]*serveCtx, err erro
 				plog.Info("stopping listening for client requests on ", u.Host)
 			}
 		}()
+		// 设置用户自定义的 Handler
 		for k := range cfg.UserHandlers {
 			sctx.userHandlers[k] = cfg.UserHandlers[k]
 		}
@@ -700,6 +728,7 @@ func configureClientListeners(cfg *Config) (sctxs map[string]*serveCtx, err erro
 		if cfg.Debug {
 			sctx.registerTrace()
 		}
+		// 记录当前 serveCtx 实例
 		sctxs[addr] = sctx
 	}
 	return sctxs, nil
@@ -720,14 +749,17 @@ func (e *Etcd) serveClients() (err error) {
 
 	// Start a client server goroutine for each listen address
 	var h http.Handler
+	// 初始化 v2 版本 API 使用的 Handler 实例
 	if e.Config().EnableV2 {
 		if len(e.Config().ExperimentalEnableV2V3) > 0 {
 			srv := v2v3.NewServer(e.cfg.logger, v3client.New(e.Server), e.cfg.ExperimentalEnableV2V3)
 			h = v2http.NewClientHandler(e.GetLogger(), srv, e.Server.Cfg.ReqTimeout())
 		} else {
+			// 注册完整的 v2 版本的 Handler, 可以正常响应 Client v2 的请求
 			h = v2http.NewClientHandler(e.GetLogger(), e.Server, e.Server.Cfg.ReqTimeout())
 		}
 	} else {
+		// 只提供基本的查询功能, 不响应 Client v2 的请求
 		mux := http.NewServeMux()
 		etcdhttp.HandleBasic(mux, e.Server)
 		h = mux
@@ -749,6 +781,7 @@ func (e *Etcd) serveClients() (err error) {
 	}
 
 	// start client servers in each goroutine
+	// 每个 Client URL 对应的服务都会在单独的 goroutine 中启动
 	for _, sctx := range e.sctxs {
 		go func(s *serveCtx) {
 			e.errHandler(s.serve(e.Server, &e.cfg.ClientTLSInfo, h, e.errHandler, gopts...))

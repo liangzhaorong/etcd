@@ -47,6 +47,8 @@ type Store interface {
 	Update(nodePath string, newValue string, expireOpts TTLOptionSet) (*Event, error)
 	Create(nodePath string, dir bool, value string, unique bool,
 		expireOpts TTLOptionSet) (*Event, error)
+	// CompareAndSwap 会比较当前节点的 PreIndex 和 PreValue 是否与此次操作
+	// 提供的值相同, 然后决定是否修改.
 	CompareAndSwap(nodePath string, prevValue string, prevIndex uint64,
 		value string, expireOpts TTLOptionSet) (*Event, error)
 	Delete(nodePath string, dir, recursive bool) (*Event, error)

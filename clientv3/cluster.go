@@ -32,6 +32,7 @@ type (
 	MemberPromoteResponse pb.MemberPromoteResponse
 )
 
+// Cluster 负责完成集群节点的管理操作, 如, 增删改查集群中的节点信息.
 type Cluster interface {
 	// MemberList lists the current cluster membership.
 	MemberList(ctx context.Context) (*MemberListResponse, error)

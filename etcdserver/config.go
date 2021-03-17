@@ -43,6 +43,7 @@ type ServerConfig struct {
 	// rather than the dataDir/member/wal.
 	DedicatedWALDir string
 
+	// 该字段限定当连续应用一定量的 Entry 记录, 会触发快照的生成（SnapshotCount 默认为 10000 条）
 	SnapshotCount uint64
 
 	// SnapshotCatchUpEntries is the number of entries for a slow follower
@@ -64,6 +65,7 @@ type ServerConfig struct {
 	// BackendFreelistType is the type of the backend boltdb freelist.
 	BackendFreelistType bolt.FreelistType
 
+	// 封装了集群中每个节点的名称与其提供的 URL 之间的映射
 	InitialPeerURLsMap  types.URLsMap
 	InitialClusterToken string
 	NewCluster          bool
@@ -113,6 +115,7 @@ type ServerConfig struct {
 	AutoCompactionRetention time.Duration
 	AutoCompactionMode      string
 	CompactionBatchLimit    int
+	// 指定 BoltDB 数据量的上限值. 没有指定该值, 即为 0, 则使用默认值 2GB; 小于 0 则表示没有限制.
 	QuotaBackendBytes       int64
 	MaxTxnOps               uint
 
@@ -168,13 +171,19 @@ type ServerConfig struct {
 
 // VerifyBootstrap sanity-checks the initial config for bootstrap case
 // and returns an error for things that should never happen.
+//
+// VerifyBootstrap 主要检测当前配置中是否包含当前节点, 检测当前节点提供的 URL 与 initial-advertise-peer-urls
+// 配置项是否相同, 检测集群配置中是否存在重复的 URL 地址.
 func (c *ServerConfig) VerifyBootstrap() error {
+	// 检测当前配置中是否包含当前节点
 	if err := c.hasLocalMember(); err != nil {
 		return err
 	}
+	// 检测当前节点提供的 URL 与 initial-advertise-peer-urls 配置项是否相同
 	if err := c.advertiseMatchesCluster(); err != nil {
 		return err
 	}
+	// 检测集群配置中是否存在重复的 URL 地址
 	if checkDuplicateURL(c.InitialPeerURLsMap) {
 		return fmt.Errorf("initial cluster %s has duplicate url", c.InitialPeerURLsMap)
 	}
@@ -311,4 +320,5 @@ func (c *ServerConfig) bootstrapTimeout() time.Duration {
 	return time.Second
 }
 
+// backendPath 获取 BoltDB 数据库文件存放的路径
 func (c *ServerConfig) backendPath() string { return filepath.Join(c.SnapDir(), "db") }

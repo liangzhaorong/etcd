@@ -35,12 +35,12 @@ type RequestV2Handler interface {
 
 type reqV2HandlerEtcdServer struct {
 	reqV2HandlerStore
-	s *EtcdServer
+	s *EtcdServer // 关联的 EtcdServer 实例
 }
 
 type reqV2HandlerStore struct {
-	store   v2store.Store
-	applier ApplierV2
+	store   v2store.Store // 关联的 etcd v2 版本存储
+	applier ApplierV2     // v2 存储的接口封装
 }
 
 func NewStoreRequestV2Handler(s v2store.Store, applier ApplierV2) RequestV2Handler {
@@ -119,7 +119,9 @@ func (a *reqV2HandlerEtcdServer) processRaftRequest(ctx context.Context, r *Requ
 }
 
 func (s *EtcdServer) Do(ctx context.Context, r pb.Request) (Response, error) {
+	// 为请求生成唯一 ID
 	r.ID = s.reqIDGen.Next()
+	// 创建 reqV2HandlerEtcdServer 实例
 	h := &reqV2HandlerEtcdServer{
 		reqV2HandlerStore: reqV2HandlerStore{
 			store:   s.v2store,
@@ -142,6 +144,7 @@ func (r *RequestV2) Handle(ctx context.Context, v2api RequestV2Handler) (Respons
 	if r.Method == "GET" && r.Quorum {
 		r.Method = "QGET"
 	}
+	// 根据请求的 Method 字段调用对应的方法
 	switch r.Method {
 	case "POST":
 		return v2api.Post(ctx, r)

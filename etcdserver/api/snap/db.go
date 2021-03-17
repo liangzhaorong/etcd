@@ -36,27 +36,32 @@ var ErrNoDBSnapshot = errors.New("snap: snapshot file doesn't exist")
 func (s *Snapshotter) SaveDBFrom(r io.Reader, id uint64) (int64, error) {
 	start := time.Now()
 
+	// 创建临时文件
 	f, err := ioutil.TempFile(s.dir, "tmp")
 	if err != nil {
 		return 0, err
 	}
 	var n int64
+	// 将快照数据写入临时文件中
 	n, err = io.Copy(f, r)
 	if err == nil {
 		fsyncStart := time.Now()
 		err = fileutil.Fsync(f)
 		snapDBFsyncSec.Observe(time.Since(fsyncStart).Seconds())
 	}
-	f.Close()
+	f.Close() // 关闭临时文件
 	if err != nil {
+		// 如上述过程出现异常, 则删除临时文件
 		os.Remove(f.Name())
 		return n, err
 	}
+	// 获取指定的 "snap.db" 文件, 如果存在则将其删除
 	fn := s.dbFilePath(id)
 	if fileutil.Exist(fn) {
 		os.Remove(f.Name())
 		return n, nil
 	}
+	// 重命名临时文件
 	err = os.Rename(f.Name(), fn)
 	if err != nil {
 		os.Remove(f.Name())
@@ -80,10 +85,14 @@ func (s *Snapshotter) SaveDBFrom(r io.Reader, id uint64) (int64, error) {
 
 // DBFilePath returns the file path for the snapshot of the database with
 // given id. If the snapshot does not exist, it returns error.
+//
+// DBFilePath 用于查找指定的快照文件.
 func (s *Snapshotter) DBFilePath(id uint64) (string, error) {
+	// 尝试读取快照目录, 主要是检测快照文件是否存在
 	if _, err := fileutil.ReadDir(s.dir); err != nil {
 		return "", err
 	}
+	// 获取指定的快照 db 的绝对路径
 	fn := s.dbFilePath(id)
 	if fileutil.Exist(fn) {
 		return fn, nil

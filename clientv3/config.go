@@ -46,6 +46,8 @@ type Config struct {
 	// If 0, it defaults to 2.0 MiB (2 * 1024 * 1024).
 	// Make sure that "MaxCallSendMsgSize" < server-side default send/recv limit.
 	// ("--max-request-bytes" flag to etcd or "embed.Config.MaxRequestBytes").
+	//
+	// 客户端一次发送字节数的最大限制, 默认 2MB.
 	MaxCallSendMsgSize int
 
 	// MaxCallRecvMsgSize is the client-side response receive limit.

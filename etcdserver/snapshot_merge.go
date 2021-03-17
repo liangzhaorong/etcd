@@ -28,9 +28,11 @@ import (
 // createMergedSnapshotMessage creates a snapshot message that contains: raft status (term, conf),
 // a snapshot of v2 store inside raft.Snapshot as []byte, a snapshot of v3 KV in the top level message
 // as ReadCloser.
+//
+// createMergedSnapshotMessage 将 v2 版本存储和 v3 版本存储封装成 snap.Message 实例
 func (s *EtcdServer) createMergedSnapshotMessage(m raftpb.Message, snapt, snapi uint64, confState raftpb.ConfState) snap.Message {
 	// get a snapshot of v2 store as []byte
-	clone := s.v2store.Clone()
+	clone := s.v2store.Clone()   // 复制一份 v2 存储的数据, 并转换成 JSON 格式
 	d, err := clone.SaveNoCopy()
 	if err != nil {
 		if lg := s.getLogger(); lg != nil {
@@ -41,13 +43,16 @@ func (s *EtcdServer) createMergedSnapshotMessage(m raftpb.Message, snapt, snapi 
 	}
 
 	// commit kv to write metadata(for example: consistent index).
-	s.KV().Commit()
+	s.KV().Commit() // 提交 v3 存储中当前的读写事务
+	// 获取 v3 存储快照, 其实就是对 BoltDB 数据库进行快照
 	dbsnap := s.be.Snapshot()
 	// get a snapshot of v3 KV as readCloser
 	rc := newSnapshotReaderCloser(s.getLogger(), dbsnap)
 
 	// put the []byte snapshot of store into raft snapshot and return the merged snapshot with
 	// KV readCloser snapshot.
+	//
+	// 将 v2 存储的快照数据和相关元数据写入 raftpb.Snapshot 实例中
 	snapshot := raftpb.Snapshot{
 		Metadata: raftpb.SnapshotMetadata{
 			Index:     snapi,
@@ -56,8 +61,10 @@ func (s *EtcdServer) createMergedSnapshotMessage(m raftpb.Message, snapt, snapi 
 		},
 		Data: d,
 	}
+	// 将 raftpb.Snapshot 实例封装到 MsgSnap 消息中
 	m.Snapshot = snapshot
 
+	// 将消息 MsgSnap 消息和 v3 存储中的数据封装成 snap.Message 实例返回
 	return *snap.NewMessage(m, rc, dbsnap.Size())
 }
 

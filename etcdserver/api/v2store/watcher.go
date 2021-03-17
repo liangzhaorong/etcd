@@ -20,6 +20,7 @@ type Watcher interface {
 	Remove()
 }
 
+// watcher 结构体是整个 Watcher 机制的基础.
 type watcher struct {
 	eventChan  chan *Event
 	stream     bool

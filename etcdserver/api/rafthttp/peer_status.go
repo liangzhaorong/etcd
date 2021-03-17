@@ -32,10 +32,14 @@ type failureType struct {
 
 type peerStatus struct {
 	lg     *zap.Logger
+	// 当前节点 ID
 	local  types.ID
+	// peer 节点 ID
 	id     types.ID
 	mu     sync.Mutex // protect variables below
+	// 标识当前节点与对端节点连通
 	active bool
+	// 上次连接成功的时间
 	since  time.Time
 }
 
@@ -43,6 +47,7 @@ func newPeerStatus(lg *zap.Logger, local, id types.ID) *peerStatus {
 	return &peerStatus{lg: lg, local: local, id: id}
 }
 
+// activate 设置 peerStatus.active 为 true, 标识与对端节点连通
 func (s *peerStatus) activate() {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -25,8 +25,11 @@ import (
 	"go.etcd.io/etcd/pkg/traceutil"
 )
 
+// authApplierV3 在 applierV3backend 的基础上扩展出了权限控制的功能.
 type authApplierV3 struct {
+	// 内嵌 applierV3
 	applierV3
+	// AuthStore 接口中定义与权限管理相关操作
 	as     auth.AuthStore
 	lessor lease.Lessor
 
@@ -34,6 +37,7 @@ type authApplierV3 struct {
 	// serialized requests don't leak data from TOCTOU errors
 	mu sync.Mutex
 
+	// 在处理每个请求时, 都会使用该字段记录该请求头中的权限信息
 	authInfo auth.AuthInfo
 }
 
@@ -41,29 +45,38 @@ func newAuthApplierV3(as auth.AuthStore, base applierV3, lessor lease.Lessor) *a
 	return &authApplierV3{applierV3: base, as: as, lessor: lessor}
 }
 
+// authApplierV3 重写了 Apply 方法, 首先记录请求头中携带的权限信息, 然后对此次请求是否需要 Admin 权限
+// 进行检测, 最后调用 applierV3 实现的 Apply() 方法完成请求的分发.
 func (aa *authApplierV3) Apply(r *pb.InternalRaftRequest) *applyResult {
 	aa.mu.Lock()
 	defer aa.mu.Unlock()
+	// 将请求头中的 Username 和 AuthRevision 记录到 authApplierV3.authInfo 中
 	if r.Header != nil {
 		// backward-compatible with pre-3.0 releases when internalRaftRequest
 		// does not have header field
 		aa.authInfo.Username = r.Header.Username
 		aa.authInfo.Revision = r.Header.AuthRevision
 	}
+	// 检测该请求是否需要 Admin 权限, 其中 AuthEnable、AuthDisable、AuthUser*、AuthRole* 等请求,
+	// 都是需要 Admin 权限.
 	if needAdminPermission(r) {
+		// 检测 Admin 权限
 		if err := aa.as.IsAdminPermitted(&aa.authInfo); err != nil {
 			aa.authInfo.Username = ""
 			aa.authInfo.Revision = 0
 			return &applyResult{err: err}
 		}
 	}
+	// 调用底层 applierV3 实现的 Apply() 方法完成请求分发
 	ret := aa.applierV3.Apply(r)
+	// 清空 authApplierV3.authInfo
 	aa.authInfo.Username = ""
 	aa.authInfo.Revision = 0
 	return ret
 }
 
 func (aa *authApplierV3) Put(txn mvcc.TxnWrite, r *pb.PutRequest) (*pb.PutResponse, *traceutil.Trace, error) {
+	// 检测 Put 权限
 	if err := aa.as.IsPutPermitted(&aa.authInfo, r.Key); err != nil {
 		return nil, nil, err
 	}
@@ -76,12 +89,14 @@ func (aa *authApplierV3) Put(txn mvcc.TxnWrite, r *pb.PutRequest) (*pb.PutRespon
 		return nil, nil, err
 	}
 
+	// 如果需要返回更新前的键值对信息, 则需要用 Range 权限
 	if r.PrevKv {
 		err := aa.as.IsRangePermitted(&aa.authInfo, r.Key, nil)
 		if err != nil {
 			return nil, nil, err
 		}
 	}
+	// 调用底层的 applierV3 实现, 完成 Put 操作
 	return aa.applierV3.Put(txn, r)
 }
 

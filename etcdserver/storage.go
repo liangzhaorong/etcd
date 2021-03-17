@@ -31,8 +31,14 @@ import (
 type Storage interface {
 	// Save function saves ents and state to the underlying stable storage.
 	// Save MUST block until st and ents are on stable storage.
+	//
+	// 负责将 Entry 记录和 HardState 状态信息保存到底层的持久化存储上, 该方法可能会阻塞,
+	// Storage 接口的实现是通过 WAL 模块将上述数据持久化到 WAL 日志文件中的.
 	Save(st raftpb.HardState, ents []raftpb.Entry) error
 	// SaveSnap function saves snapshot to the underlying stable storage.
+	//
+	// 负责将快照数据持久化到底层的持久化存储上, 该方法也可能会阻塞, Storage 接口的实现
+	// 是使用 Snapshotter 将快照数据保存到快照文件中的.
 	SaveSnap(snap raftpb.Snapshot) error
 	// Close closes the Storage and performs finalization.
 	Close() error
@@ -42,6 +48,7 @@ type Storage interface {
 	Sync() error
 }
 
+// storage 结构体是 EtcdServer.Storage 接口的实现, 其中内嵌了 WAL 和 Snapshotter.
 type storage struct {
 	*wal.WAL
 	*snap.Snapshotter
@@ -52,7 +59,10 @@ func NewStorage(w *wal.WAL, s *snap.Snapshotter) Storage {
 }
 
 // SaveSnap saves the snapshot file to disk and writes the WAL snapshot entry.
+//
+// SaveSnap 将快照数据写入到磁盘和 WAL 中.
 func (st *storage) SaveSnap(snap raftpb.Snapshot) error {
+	// 根据快照的元数据创建对应的 walpb.Snapshot 实例
 	walsnap := walpb.Snapshot{
 		Index: snap.Metadata.Index,
 		Term:  snap.Metadata.Term,
@@ -60,12 +70,15 @@ func (st *storage) SaveSnap(snap raftpb.Snapshot) error {
 	// save the snapshot file before writing the snapshot to the wal.
 	// This makes it possible for the snapshot file to become orphaned, but prevents
 	// a WAL snapshot entry from having no corresponding snapshot file.
+	//
+	// 通过 Snapshotter 将快照数据写入到磁盘中
 	err := st.Snapshotter.SaveSnap(snap)
 	if err != nil {
 		return err
 	}
 	// gofail: var raftBeforeWALSaveSnaphot struct{}
 
+	// 将 walpb.Snapshot 实例封装成 Record 记录写入 WAL 日志文件中
 	return st.WAL.SaveSnapshot(walsnap)
 }
 
@@ -73,6 +86,7 @@ func (st *storage) SaveSnap(snap raftpb.Snapshot) error {
 // - releases the locks to the wal files that are older than the provided wal for the given snap.
 // - deletes any .snap.db files that are older than the given snap.
 func (st *storage) Release(snap raftpb.Snapshot) error {
+	// 根据 WAL 日志文件中的名称及快照的元数据, 释放快照之前的 WAL 日志文件句柄
 	if err := st.WAL.ReleaseLockTo(snap.Metadata.Index); err != nil {
 		return err
 	}

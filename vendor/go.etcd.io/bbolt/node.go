@@ -8,6 +8,8 @@ import (
 )
 
 // node represents an in-memory, deserialized page.
+//
+// node 表示一个在内存中的反序列的 page.
 type node struct {
 	bucket     *Bucket
 	isLeaf     bool
@@ -594,6 +596,9 @@ func (s nodes) Less(i, j int) bool { return bytes.Compare(s[i].inodes[0].key, s[
 // inode represents an internal node inside of a node.
 // It can be used to point to elements in a page or point
 // to an element which hasn't been added to a page yet.
+//
+// inode 是一个 node 中的内部节点, 可用来指向 page 中的元素或者还未被添加到 page 中的元素.
+// 通常说的键值对就对应一个 inode.
 type inode struct {
 	flags uint32
 	pgid  pgid

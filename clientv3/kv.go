@@ -30,11 +30,14 @@ type (
 	TxnResponse     pb.TxnResponse
 )
 
+// KV 负责处理键值对操作, 如, 增删改查键值对数据、触发压缩操作等.
 type KV interface {
 	// Put puts a key-value pair into etcd.
 	// Note that key,value can be plain bytes array and string is
 	// an immutable representation of that bytes array.
 	// To get a string of bytes, do string([]byte{0x10, 0x20}).
+	//
+	// 向集群写入指定的键值对
 	Put(ctx context.Context, key, val string, opts ...OpOption) (*PutResponse, error)
 
 	// Get retrieves keys.
@@ -45,12 +48,18 @@ type KV interface {
 	// if the required revision is compacted, the request will fail with ErrCompacted .
 	// When passed WithLimit(limit), the number of returned keys is bounded by limit.
 	// When passed WithSort(), the keys will be sorted.
+	//
+	// 查询指定键值对
 	Get(ctx context.Context, key string, opts ...OpOption) (*GetResponse, error)
 
 	// Delete deletes a key, or optionally using WithRange(end), [key, end).
+	//
+	// 删除指定的键值对
 	Delete(ctx context.Context, key string, opts ...OpOption) (*DeleteResponse, error)
 
 	// Compact compacts etcd KV history before the given rev.
+	//
+	// 触发压缩操作
 	Compact(ctx context.Context, rev int64, opts ...CompactOption) (*CompactResponse, error)
 
 	// Do applies a single Op on KV without a transaction.
@@ -58,9 +67,12 @@ type KV interface {
 	// later time; the user can range over the operations, calling Do to
 	// execute them. Get/Put/Delete, on the other hand, are best suited
 	// for when the operation should be issued at the time of declaration.
+	//
+	// 应用单个操作, 上面的 Put()、Get() 等方法都是调用该方法实现的.
 	Do(ctx context.Context, op Op) (OpResponse, error)
 
 	// Txn creates a transaction.
+	// 开启一个事务
 	Txn(ctx context.Context) Txn
 }
 
@@ -90,6 +102,7 @@ func (resp *TxnResponse) OpResponse() OpResponse {
 }
 
 type kv struct {
+	// 指向 retryKVClient 实例
 	remote   pb.KVClient
 	callOpts []grpc.CallOption
 }
@@ -141,6 +154,7 @@ func (kv *kv) Txn(ctx context.Context) Txn {
 	}
 }
 
+// Do 根据此次操作的类型, 分别调用 KVClient 相应的方法向集群发送请求.
 func (kv *kv) Do(ctx context.Context, op Op) (OpResponse, error) {
 	var err error
 	switch op.t {

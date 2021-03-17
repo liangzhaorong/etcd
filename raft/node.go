@@ -257,8 +257,8 @@ type Node interface {
 }
 
 type Peer struct {
-	ID      uint64
-	Context []byte
+	ID      uint64 // 节点 ID
+	Context []byte // 该节点对应的 Member 实例序列化后的数据
 }
 
 // StartNode returns a new Node given configuration and a list of raft peers.

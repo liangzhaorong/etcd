@@ -107,17 +107,21 @@ func (s *EtcdServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeRe
 		trace.LogIfLong(traceThreshold)
 	}(time.Now())
 
+	// 判断此次请求是否为 linearizable read
 	if !r.Serializable {
+		// 对于 linearizable read 请求来说, 会在这里阻塞等待.
 		err = s.linearizableReadNotify(ctx)
 		trace.Step("agreement among raft nodes before linearized reading")
 		if err != nil {
 			return nil, err
 		}
 	}
+	// 用于检测 RangeRequest 请求权限的回调函数
 	chk := func(ai *auth.AuthInfo) error {
 		return s.authStore.IsRangePermitted(ai, r.Key, r.RangeEnd)
 	}
 
+	// 真正查询键值对的回调函数
 	get := func() { resp, err = s.applyV3Base.Range(ctx, nil, r) }
 	if serr := s.doSerialize(ctx, chk, get); serr != nil {
 		err = serr
@@ -143,9 +147,16 @@ func (s *EtcdServer) DeleteRange(ctx context.Context, r *pb.DeleteRangeRequest) 
 	return resp.(*pb.DeleteRangeResponse), nil
 }
 
+// Txn 在 TxnRequest 中可以封装多个操作, 这些操作将会批量执行. 该 Txn() 方法就用来处理客户端发送的 TxnRequest,
+// 其中会根据 TxnRequest 中封装的操作类型进行分类处理. 如果 TxnRequest 中封装的都是只读操作, 则其处理流程与 Range()
+// 方法类似; 如果 TxnRequest 中包含写操作, 则其处理流程与 Put() 方法类似.
 func (s *EtcdServer) Txn(ctx context.Context, r *pb.TxnRequest) (*pb.TxnResponse, error) {
+	// 检测 TxnRequest 中是否全部为只读操作
 	if isTxnReadonly(r) {
+		// 如果 TxnRequest 中全部是只读操作, 则检测这些操作是否全部为 serializable read
 		if !isTxnSerializable(r) {
+			// 如果存在 linearizable read, 则调用 linearizableReadNotify() 方法处理, 并阻塞等待
+			// 整个 linearizable read 处理流程结束.
 			err := s.linearizableReadNotify(ctx)
 			if err != nil {
 				return nil, err
@@ -153,6 +164,7 @@ func (s *EtcdServer) Txn(ctx context.Context, r *pb.TxnRequest) (*pb.TxnResponse
 		}
 		var resp *pb.TxnResponse
 		var err error
+		// 权限检测回调函数
 		chk := func(ai *auth.AuthInfo) error {
 			return checkTxnAuth(s.authStore, ai, r)
 		}
@@ -161,13 +173,17 @@ func (s *EtcdServer) Txn(ctx context.Context, r *pb.TxnRequest) (*pb.TxnResponse
 			warnOfExpensiveReadOnlyTxnRequest(s.getLogger(), start, r, resp, err)
 		}(time.Now())
 
+		// 真正完成 TxnRequest 处理的回调函数
 		get := func() { resp, err = s.applyV3Base.Txn(r) }
+		// 调用 doSerialize() 方法, 完成 Txn() 处理
 		if serr := s.doSerialize(ctx, chk, get); serr != nil {
 			return nil, serr
 		}
 		return resp, err
 	}
 
+	// 如果 TxnRequest 中存在写操作, 则需要调用 raftRequest() 方法发送 MsgProp 消息, 并等待其中
+	// 的 Entry 记录被应用.
 	resp, err := s.raftRequest(ctx, pb.InternalRaftRequest{Txn: r})
 	if err != nil {
 		return nil, err
@@ -203,8 +219,10 @@ func isTxnReadonly(r *pb.TxnRequest) bool {
 	return true
 }
 
+// Compact 处理客户端压缩请求.
 func (s *EtcdServer) Compact(ctx context.Context, r *pb.CompactionRequest) (*pb.CompactionResponse, error) {
 	startTime := time.Now()
+	// 将 CompactionRequest 请求封装成 MsgProp 消息并发送出去, 并等待其中的 Entry 被应用
 	result, err := s.processInternalRaftRequestOnce(ctx, pb.InternalRaftRequest{Compaction: r})
 	trace := traceutil.TODO()
 	if result != nil && result.trace != nil {
@@ -217,13 +235,14 @@ func (s *EtcdServer) Compact(ctx context.Context, r *pb.CompactionRequest) (*pb.
 		trace.InsertStep(0, applyStart, "process raft request")
 	}
 	if r.Physical && result != nil && result.physc != nil {
+		// 等待压缩操作结束
 		<-result.physc
 		// The compaction is done deleting keys; the hash is now settled
 		// but the data is not necessarily committed. If there's a crash,
 		// the hash may revert to a hash prior to compaction completing
 		// if the compaction resumes. Force the finished compaction to
 		// commit so it won't resume following a crash.
-		s.be.ForceCommit()
+		s.be.ForceCommit() // 提交压缩操作使用的事务
 		trace.Step("physically apply compaction")
 	}
 	if err != nil {
@@ -258,10 +277,14 @@ func (s *EtcdServer) LeaseGrant(ctx context.Context, r *pb.LeaseGrantRequest) (*
 }
 
 func (s *EtcdServer) LeaseRevoke(ctx context.Context, r *pb.LeaseRevokeRequest) (*pb.LeaseRevokeResponse, error) {
+	// 先将 LeaseRevokeRequest 封装成 InternalRaftRequest, 并调用 raftRequestOnce() 方法
 	resp, err := s.raftRequestOnce(ctx, pb.InternalRaftRequest{LeaseRevoke: r})
 	if err != nil {
 		return nil, err
 	}
+	// TODO: 待 LeaseRevokeRequest 请求对应的 Entry 记录成功经过 Raft 协议处理之后, 会经过 applyEntryNormal() 方法
+	//  的处理, 其中会调用 applierV3.LeaseRevoke() 方法, 该方法实际上是调用 EtcdServer.lessor.LeaseRevoke() 方法,
+	//  该方法会删除对应的 Lease 实例及其绑定的键值对.
 	return resp.(*pb.LeaseRevokeResponse), nil
 }
 
@@ -584,6 +607,7 @@ func (s *EtcdServer) raftRequest(ctx context.Context, r pb.InternalRaftRequest) 
 // doSerialize handles the auth logic, with permissions checked by "chk", for a serialized request "get". Returns a non-nil error on authentication failure.
 func (s *EtcdServer) doSerialize(ctx context.Context, chk func(*auth.AuthInfo) error, get func()) error {
 	trace := traceutil.Get(ctx)
+	// 获取权限相关的信息
 	ai, err := s.AuthInfoFromCtx(ctx)
 	if err != nil {
 		return err
@@ -592,14 +616,18 @@ func (s *EtcdServer) doSerialize(ctx context.Context, chk func(*auth.AuthInfo) e
 		// chk expects non-nil AuthInfo; use empty credentials
 		ai = &auth.AuthInfo{}
 	}
+	// 回调 chk() 回调函数, 通过 authStore 完全权限检测
 	if err = chk(ai); err != nil {
 		return err
 	}
 	trace.Step("get authentication metadata")
 	// fetch response for serialized request
+	// 回调 get() 函数, 其中直接通过 applyV3Base 从底层存储中读取键值对数据
 	get()
 	// check for stale token revision in case the auth store was updated while
 	// the request has been handled.
+	//
+	// 若读取完成后发生了权限修改, 则返回错误
 	if ai.Revision != 0 && ai.Revision != s.authStore.Revision() {
 		return auth.ErrAuthOldRevision
 	}
@@ -607,16 +635,19 @@ func (s *EtcdServer) doSerialize(ctx context.Context, chk func(*auth.AuthInfo) e
 }
 
 func (s *EtcdServer) processInternalRaftRequestOnce(ctx context.Context, r pb.InternalRaftRequest) (*applyResult, error) {
-	ai := s.getAppliedIndex()
-	ci := s.getCommittedIndex()
+	// 检测当前是否有大量已提交但未应用的 Entry 记录, 如果有, 则返回错误以实现限流
+	ai := s.getAppliedIndex()   // 获取当前节点已应用的 Entry 记录的最大索引值
+	ci := s.getCommittedIndex() // 获取当前节点已提交的 Entry 记录的最大索引值
 	if ci > ai+maxGapBetweenApplyAndCommitIndex {
 		return nil, ErrTooManyRequests
 	}
 
+	// 为请求生成 id
 	r.Header = &pb.RequestHeader{
 		ID: s.reqIDGen.Next(),
 	}
 
+	// 获取权限信息, 记录到请求头中
 	authInfo, err := s.AuthInfoFromCtx(ctx)
 	if err != nil {
 		return nil, err
@@ -626,11 +657,13 @@ func (s *EtcdServer) processInternalRaftRequestOnce(ctx context.Context, r pb.In
 		r.Header.AuthRevision = authInfo.Revision
 	}
 
+	// 将 InternalRaftRequest 请求序列化
 	data, err := r.Marshal()
 	if err != nil {
 		return nil, err
 	}
 
+	// 检测序列化后的长度
 	if len(data) > int(s.Cfg.MaxRequestBytes) {
 		return nil, ErrRequestTooLarge
 	}
@@ -639,12 +672,14 @@ func (s *EtcdServer) processInternalRaftRequestOnce(ctx context.Context, r pb.In
 	if id == 0 {
 		id = r.Header.ID
 	}
+	// 在 EtcdServer.wait 中为该请求注册相应的 ch 通道
 	ch := s.w.Register(id)
 
 	cctx, cancel := context.WithTimeout(ctx, s.Cfg.ReqTimeout())
 	defer cancel()
 
 	start := time.Now()
+	// 将 InternalRaftRequest 序列化后的数据封装为 Entry, 之后生成 MsgProp 消息并发送出去.
 	err = s.r.Propose(cctx, data)
 	if err != nil {
 		proposalsFailed.Inc()
@@ -655,6 +690,7 @@ func (s *EtcdServer) processInternalRaftRequestOnce(ctx context.Context, r pb.In
 	defer proposalsPending.Dec()
 
 	select {
+	// 阻塞等待上面发送的 Entry 被应用
 	case x := <-ch:
 		return x.(*applyResult), nil
 	case <-cctx.Done():
@@ -674,26 +710,33 @@ func (s *EtcdServer) linearizableReadLoop() {
 
 	for {
 		ctxToSend := make([]byte, 8)
-		id1 := s.reqIDGen.Next()
+		id1 := s.reqIDGen.Next() // 创建唯一 ID
 		binary.BigEndian.PutUint64(ctxToSend, id1)
 		leaderChangedNotifier := s.leaderChangedNotify()
 		select {
 		case <-leaderChangedNotifier:
 			continue
+		// 在 Client 发起一次 Linearizable Read 时, 会向 readwaitc 通道中写入一个空结构体作为信号.
+		// （是通过调用 EtcdServer.linearizableReadNotify() 方法写入信号到 readwaitc 从而通知当前 goroutine）
 		case <-s.readwaitc:
+		// 监听到 stopping 通道关闭, 则表示当前 EtcdServer 实例正在关闭, 会结束该 goroutine
 		case <-s.stopping:
 			return
 		}
 
+		// 新建 notifier 实例
 		nextnr := newNotifier()
 
-		s.readMu.Lock()
+		s.readMu.Lock() // 加锁
+		// 记录当前 notifier 实例
 		nr := s.readNotifier
+		// 使用新建的 notifier 实例更新 EtcdServer.readNotifier 字段
 		s.readNotifier = nextnr
 		s.readMu.Unlock()
 
 		lg := s.getLogger()
 		cctx, cancel := context.WithTimeout(context.Background(), s.Cfg.ReqTimeout())
+		// 创建并处理 MsgReadIndex 请求
 		if err := s.r.ReadIndex(cctx, ctxToSend); err != nil {
 			cancel()
 			if err == raft.ErrStopped {
@@ -714,10 +757,14 @@ func (s *EtcdServer) linearizableReadLoop() {
 			timeout bool
 			done    bool
 		)
+		// 检测 MsgReadIndex 请求是否超时, 是否已被处理完
 		for !timeout && !done {
 			select {
+			// 在 raftNode 处理 Ready 实例时, 会将 Ready.ReadStates 中最后一项写入该通道中
 			case rs = <-s.r.readStateC:
+				// 在 ReadState.RequestCtx 中携带了请求 id
 				done = bytes.Equal(rs.RequestCtx, ctxToSend)
+				// 忽略乱序的响应, 输出日志并继续当前 for 循环等待请求对应的响应
 				if !done {
 					// a previous request might time out. now we should ignore the response of it and
 					// continue waiting for the response of the current requests.
@@ -747,6 +794,7 @@ func (s *EtcdServer) linearizableReadLoop() {
 				} else {
 					plog.Warningf("timed out waiting for read index response (local node might have slow network)")
 				}
+				// 在 notifier.err 字段中设置错误信息, 同时关闭 notifier.c 通道
 				nr.notify(ErrTimeout)
 				timeout = true
 				slowReadIndex.Inc()
@@ -758,31 +806,39 @@ func (s *EtcdServer) linearizableReadLoop() {
 			continue
 		}
 
+		// ReadState.Index 记录的是 commit Index
 		if ai := s.getAppliedIndex(); ai < rs.Index {
 			select {
+			// 如果当前节点已应用的 Entry 记录未到指定的 committed Index, 则需要阻塞等待.
+			// 后面 EtcdServer.applyAll() 方法处理完待应用的 Entry 记录之后, 会将已应用 Entry 记录
+			// 在 WaitTime 中的通道关闭, 则 linearizableReadLoop goroutine 可以得到此信号, 继续执行.
 			case <-s.applyWait.Wait(rs.Index):
 			case <-s.stopping:
 				return
 			}
 		}
 		// unblock all l-reads requested at indices before rs.Index
-		nr.notify(nil)
+		nr.notify(nil) // 关闭 notifier.c 通道
 	}
 }
 
 func (s *EtcdServer) linearizableReadNotify(ctx context.Context) error {
 	s.readMu.RLock()
-	nc := s.readNotifier
+	nc := s.readNotifier // 获取 EtcdServer.readNotifier 实例
 	s.readMu.RUnlock()
 
 	// signal linearizable loop for current notify if it hasn't been already
 	select {
+	// 在 linearizableReadLoop goroutine 中会阻塞监听 readwaitc 通道, 在这里会向 readwaitc
+	// 通道中写入一个空结构体作为信号, 通过 linearizableReadLoop goroutine 开始工作.
 	case s.readwaitc <- struct{}{}:
 	default:
 	}
 
 	// wait for read state notification
 	select {
+	// 当 linearizableReadLoop goroutine 发现已应用 Entry 的索引值超过了请求时的 committedIndex,
+	// 则关闭 notifier.c 通道, 通知执行读取操作的 goroutine 继续后续读取操作.
 	case <-nc.c:
 		return nc.err
 	case <-ctx.Done():

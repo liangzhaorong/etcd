@@ -232,7 +232,8 @@ type httpClient interface {
 }
 
 func newHTTPClientFactory(tr CancelableTransport, cr CheckRedirectFunc, headerTimeout time.Duration) httpClientFactory {
-	return func(ep url.URL) httpClient {
+	return func(ep url.URL) httpClient { // 工厂函数
+		// 创建 redirectFollowingHTTPClient 实例
 		return &redirectFollowingHTTPClient{
 			checkRedirect: cr,
 			client: &simpleHTTPClient{
@@ -256,12 +257,17 @@ type httpAction interface {
 }
 
 type httpClusterClient struct {
+	// 工厂函数, 指向 newHTTPClientFactory() 函数, 用于创建底层的 httpClient 实例
 	clientFactory httpClientFactory
+	// 记录集群中所有节点暴露给客户端的 URL 地址
 	endpoints     []url.URL
+	// 用于选择重试的 URL 地址
 	pinned        int
 	credentials   *credentials
 	sync.RWMutex
+	// 随机数, 用于选择重试的 URL 地址
 	rand          *rand.Rand
+	// 更新 endpoints 字段的模式, 目前有两个可选值, 分别是 EndpointSelectionRandom 和 EndpointSelectionPrioritizeLeader.
 	selectionMode EndpointSelectionMode
 }
 
@@ -329,11 +335,13 @@ func (c *httpClusterClient) SetEndpoints(eps []string) error {
 	return nil
 }
 
+// Do 会从 endpoints 字段中选择合适的 URL 地址并建立连接, 然后发送相应的请求.
 func (c *httpClusterClient) Do(ctx context.Context, act httpAction) (*http.Response, []byte, error) {
 	action := act
 	c.RLock()
 	leps := len(c.endpoints)
 	eps := make([]url.URL, leps)
+	// 复制目前集群提供的 URL 地址
 	n := copy(eps, c.endpoints)
 	pinned := c.pinned
 
@@ -361,7 +369,9 @@ func (c *httpClusterClient) Do(ctx context.Context, act httpAction) (*http.Respo
 
 	for i := pinned; i < leps+pinned; i++ {
 		k := i % leps
+		// 从 eps 中选择一个 URL 地址创建连接
 		hc := c.clientFactory(eps[k])
+		// 调用 httpClient.Do() 方法向服务端发送请求
 		resp, body, err = hc.Do(ctx, action)
 		if err != nil {
 			cerr.Errors = append(cerr.Errors, err)
@@ -415,16 +425,19 @@ func (c *httpClusterClient) Endpoints() []string {
 
 func (c *httpClusterClient) Sync(ctx context.Context) error {
 	mAPI := NewMembersAPI(c)
+	// 请求集群中各个节点的信息
 	ms, err := mAPI.List(ctx)
 	if err != nil {
 		return err
 	}
 
 	var eps []string
+	// 将获取到的 URL 地址添加到 eps 数组中
 	for _, m := range ms {
 		eps = append(eps, m.ClientURLs...)
 	}
 
+	// 解析 URL
 	neps, err := c.parseEndpoints(eps)
 	if err != nil {
 		return err
@@ -435,6 +448,7 @@ func (c *httpClusterClient) Sync(ctx context.Context) error {
 	switch c.selectionMode {
 	case EndpointSelectionRandom:
 		c.RLock()
+		// 比较 ClientURL 地址是否变化
 		eq := endpointsEqual(c.endpoints, neps)
 		c.RUnlock()
 
@@ -442,15 +456,20 @@ func (c *httpClusterClient) Sync(ctx context.Context) error {
 			return nil
 		}
 		// When items in the endpoint list changes, we choose a new pin
+		//
+		// 洗牌, 打乱 URL 顺序
 		neps = shuffleEndpoints(c.rand, neps)
 	case EndpointSelectionPrioritizeLeader:
+		// 获取 Leader 提供的 ClientURL
 		nle, err := c.getLeaderEndpoint(ctx, neps)
 		if err != nil {
 			return ErrNoLeaderEndpoint
 		}
 
+		// 遍历全部的 URL
 		for i, n := range neps {
 			if n.String() == nle {
+				// 将 npin 指向 Leader 提供的 ClientURL 地址的下标
 				npin = i
 				break
 			}
@@ -461,8 +480,8 @@ func (c *httpClusterClient) Sync(ctx context.Context) error {
 
 	c.Lock()
 	defer c.Unlock()
-	c.endpoints = neps
-	c.pinned = npin
+	c.endpoints = neps // 更新 endpoints 字段
+	c.pinned = npin    // 更新 pinned 字段
 
 	return nil
 }
@@ -515,13 +534,18 @@ type roundTripResponse struct {
 	err  error
 }
 
+// simpleHTTPClient 也是 httpClient 接口的实现之一.
 type simpleHTTPClient struct {
+	// 内嵌 http.RoundTripper, 用于发送 HTTP 请求并获取相应的响应
 	transport     CancelableTransport
+	// 请求的 URL 地址
 	endpoint      url.URL
+	// 请求的超时时间
 	headerTimeout time.Duration
 }
 
 func (c *simpleHTTPClient) Do(ctx context.Context, act httpAction) (*http.Response, []byte, error) {
+	// 创建 http.Request 实例
 	req := act.HTTPRequest(c.endpoint)
 
 	if err := printcURL(req); err != nil {
@@ -542,6 +566,7 @@ func (c *simpleHTTPClient) Do(ctx context.Context, act httpAction) (*http.Respon
 
 	var hctx context.Context
 	var hcancel context.CancelFunc
+	// 设置超时时间
 	if !isWait && c.headerTimeout > 0 {
 		hctx, hcancel = context.WithTimeout(ctx, c.headerTimeout)
 	} else {
@@ -552,8 +577,10 @@ func (c *simpleHTTPClient) Do(ctx context.Context, act httpAction) (*http.Respon
 	reqcancel := requestCanceler(c.transport, req)
 
 	rtchan := make(chan roundTripResponse, 1)
+	// 启动一个后台 goroutine 发送请求
 	go func() {
 		resp, err := c.transport.RoundTrip(req)
+		// 将响应写入 rtchan 通道中
 		rtchan <- roundTripResponse{resp: resp, err: err}
 		close(rtchan)
 	}()
@@ -562,6 +589,7 @@ func (c *simpleHTTPClient) Do(ctx context.Context, act httpAction) (*http.Respon
 	var err error
 
 	select {
+	// 监听 rtchan 通道获取响应
 	case rtresp := <-rtchan:
 		resp, err = rtresp.resp, rtresp.err
 	case <-hctx.Done():
@@ -593,8 +621,10 @@ func (c *simpleHTTPClient) Do(ctx context.Context, act httpAction) (*http.Respon
 
 	var body []byte
 	done := make(chan struct{})
+	// 启动一个后台 goroutine 读取响应的数据
 	go func() {
 		body, err = ioutil.ReadAll(resp.Body)
+		// 读取完成后, 向 done 通道发送信号
 		done <- struct{}{}
 	}()
 
@@ -603,6 +633,8 @@ func (c *simpleHTTPClient) Do(ctx context.Context, act httpAction) (*http.Respon
 		resp.Body.Close()
 		<-done
 		return nil, nil, ctx.Err()
+
+	// 阻塞等待后台 goroutine 读取响应体结束
 	case <-done:
 	}
 
@@ -621,6 +653,7 @@ func (a *authedAction) HTTPRequest(url url.URL) *http.Request {
 }
 
 type redirectFollowingHTTPClient struct {
+	// 指向 simpleHTTPClient 实例
 	client        httpClient
 	checkRedirect CheckRedirectFunc
 }
@@ -629,23 +662,29 @@ func (r *redirectFollowingHTTPClient) Do(ctx context.Context, act httpAction) (*
 	next := act
 	for i := 0; i < 100; i++ {
 		if i > 0 {
+			// 检测当前 Redirect 的次数, 是否还能继续 Redirect
 			if err := r.checkRedirect(i); err != nil {
 				return nil, nil, err
 			}
 		}
+		// 向服务端发送请求
 		resp, body, err := r.client.Do(ctx, next)
 		if err != nil {
 			return nil, nil, err
 		}
+		// 处理 3XX 响应
 		if resp.StatusCode/100 == 3 {
+			// 获取响应的 Location
 			hdr := resp.Header.Get("Location")
 			if hdr == "" {
 				return nil, nil, fmt.Errorf("location header not set")
 			}
+			// 解析 Location 指定的地址
 			loc, err := url.Parse(hdr)
 			if err != nil {
 				return nil, nil, fmt.Errorf("location header not valid URL: %s", hdr)
 			}
+			// 重新创建 redirectedHTTPAction 实例, 并重试
 			next = &redirectedHTTPAction{
 				action:   act,
 				location: *loc,

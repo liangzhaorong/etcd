@@ -76,24 +76,41 @@ type apply struct {
 	notifyc chan struct{}
 }
 
+// raftNode 结构体充当 etcd-raft 模块与上层模块之间交互的桥梁.
 type raftNode struct {
 	lg *zap.Logger
 
 	tickMu *sync.Mutex
+	// 内嵌 raftNodeConfig
 	raftNodeConfig
 
 	// a chan to send/receive snapshot
+	//
+	// etcd-raft 模块通过返回 Ready 实例与上层模块进行交互, 其中 Ready.Message 字段记录了待发送的消息,
+	// 其中可能会包含 MsgSnap 类型的消息, 该类型消息中封装了需要发送到其他节点的快照数据. 当 raftNode 收到
+	// MsgSnap 消息之后, 会将其写入 msgSnapC 通道中, 并等待上层模块进行发送.
 	msgSnapC chan raftpb.Message
 
 	// a chan to send out apply
+	//
+	// 在 etcd-raft 模块返回的 Ready 实例中, 除了封装了待持久化的 Entry 记录和待持久化的快照数据, 还封装了
+	// 待应用的 Entry 记录. raftNode 会将待应用的记录和快照数据封装成 apply 实例, 之后写入 applyc 通道等待
+	// 上层模块处理.
 	applyc chan apply
 
 	// a chan to send out readState
+	//
+	// Ready.ReadStates 中封装了只读请求相关的 ReadState 实例, 其中的最后一项将会被写入 readStateC 通道中等待
+	// 上层模块处理.
 	readStateC chan raft.ReadState
 
 	// utility
+	//
+	// 逻辑时钟, 每触发一次就会推进一次底层的选举计时器和心跳计时器.
 	ticker *time.Ticker
 	// contention detectors for raft heartbeat message
+	//
+	// 检测发往同一节点的两次心跳消息是否超时, 如果超时, 则会打印相关警告信息.
 	td *contention.TimeoutDetector
 
 	stopped chan struct{}
@@ -104,15 +121,24 @@ type raftNodeConfig struct {
 	lg *zap.Logger
 
 	// to check if msg receiver is removed from cluster
+	//
+	// 该函数用来检测指定节点是否已经被移出当前集群.
 	isIDRemoved func(id uint64) bool
+	// 内嵌 etcd-raft 模块的 Node
 	raft.Node
+	// 与 raftLog.storage 字段指定的 MemoryStorage 为同一实例, 主要用来保存持久化的 Entry 记录和快照数据.
 	raftStorage *raft.MemoryStorage
+	// 注意该字段的类型（etcdserver.Storage）, 在 etcd-raft 模块中有一个与之同名的接口（raft.Storage 接口）, MemoryStorage 就是
+	// raft.Storage 接口的实现之一.
 	storage     Storage
+	// 逻辑时钟的刻度
 	heartbeat   time.Duration // for logging
 	// transport specifies the transport to send and receive msgs to members.
 	// Sending messages MUST NOT block. It is okay to drop messages, since
 	// clients should timeout and reissue their messages.
 	// If transport is nil, server will panic.
+	//
+	// 通过网络将消息发送到集群中其他节点
 	transport rafthttp.Transporter
 }
 
@@ -137,7 +163,7 @@ func newRaftNode(cfg raftNodeConfig) *raftNode {
 		// expect to send a heartbeat within 2 heartbeat intervals.
 		td:         contention.NewTimeoutDetector(2 * cfg.heartbeat),
 		readStateC: make(chan raft.ReadState, 1),
-		msgSnapC:   make(chan raftpb.Message, maxInFlightMsgSnap),
+		msgSnapC:   make(chan raftpb.Message, maxInFlightMsgSnap), // 注意该通道的大小默认为 16
 		applyc:     make(chan apply),
 		stopped:    make(chan struct{}),
 		done:       make(chan struct{}),
@@ -162,41 +188,56 @@ func (r *raftNode) tick() {
 func (r *raftNode) start(rh *raftReadyHandler) {
 	internalTimeout := time.Second
 
+	// 启动后台的 goroutine 提供服务
 	go func() {
 		defer r.onStop()
-		islead := false
+		islead := false // 刚启动时会将当前节点标识为 Follower
 
 		for {
 			select {
+			// 计时器到期被触发, 调用 tick() 方法推进选举计时器和心跳计时器
 			case <-r.ticker.C:
 				r.tick()
 			case rd := <-r.Ready():
+				// 处理 Ready.SoftState 字段, 该字段主要封装了当前集群的 Leader 信息和当前节点角色
 				if rd.SoftState != nil {
+					// 检测集群的 Leader 节点是否发生变化, 并记录相关监控信息
 					newLeader := rd.SoftState.Lead != raft.None && rh.getLead() != rd.SoftState.Lead
 					if newLeader {
 						leaderChanges.Inc()
 					}
 
+					// 记录当前集群是否存在 Leader 的监控信息
 					if rd.SoftState.Lead == raft.None {
 						hasLeader.Set(0)
 					} else {
 						hasLeader.Set(1)
 					}
 
+					// 调用 raftReadyHandler.updateLead() 方法更新 etcdserver.lead 字段, 将其更新为新的 Leader 节点 ID,
+					// 注意, 这里的读取或更新 etcdserver.lead 字段都是原子操作.
 					rh.updateLead(rd.SoftState.Lead)
+					// 记录当当前节点是否为 Leader 节点
 					islead = rd.RaftState == raft.StateLeader
 					if islead {
 						isLeader.Set(1)
 					} else {
 						isLeader.Set(0)
 					}
+					// 调用 raftReadyHandler.updateLeadership 方法, 其中会根据 Leader 节点是否发生变化, 完成一些操作.
 					rh.updateLeadership(newLeader)
+					// 重置全部探测器中的全部记录
 					r.td.Reset()
 				}
 
+				// 处理 Ready 实例中返回的 ReadStates 字段信息, 该字段记录了当前节点中等待处理的只读请求
 				if len(rd.ReadStates) != 0 {
 					select {
+					// 将 Ready.ReadStates 中的最后一项写入 readStateC 通道中
 					case r.readStateC <- rd.ReadStates[len(rd.ReadStates)-1]:
+
+					// 如果上层模块一直没有读取写入 readStateC 通道中的 ReadState 实例, 会导致本次写入阻塞,
+					// 这里会等待 1s, 如果依然无法写入, 则放弃写入并输出警告日志.
 					case <-time.After(internalTimeout):
 						if r.lg != nil {
 							r.lg.Warn("timed out sending read state", zap.Duration("timeout", internalTimeout))
@@ -208,16 +249,21 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 					}
 				}
 
-				notifyc := make(chan struct{}, 1)
+				// 下面是对 Ready 实例中待应用的 Entry 记录, 以及快照数据的处理
+				notifyc := make(chan struct{}, 1) // 创建 notifyc 通道
+				// 将 Ready 实例中的待应用 Entry 记录以及快照数据封装成 apply 实例, 其中封装了 notifyc 通道,
+				// 该通道用来协调当前 goroutine 和 EtcdServer 启动的后台 goroutine 的执行.
 				ap := apply{
-					entries:  rd.CommittedEntries,
-					snapshot: rd.Snapshot,
+					entries:  rd.CommittedEntries, // 已提交、待应用的 Entry 记录
+					snapshot: rd.Snapshot,         // 待持久化的快照数据
 					notifyc:  notifyc,
 				}
 
+				// 更新 EtcdServer 中记录的已提交位置（EtcdServer.committedIndex 字段）
 				updateCommittedIndex(&ap, rh)
 
 				select {
+				// 将 apply 实例写入 applyc 通道中, 等待上层应用读取并进行处理
 				case r.applyc <- ap:
 				case <-r.stopped:
 					return
@@ -226,8 +272,13 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 				// the leader can write to its disk in parallel with replicating to the followers and them
 				// writing to their disks.
 				// For more details, check raft thesis 10.2.1
+				//
+				// 如果当前节点处理 Leader 状态, 则 raftNode.start() 方法会先调用 raftNode.processMessages()
+				// 方法对待发送的消息进行过滤, 然后调用 raftNode.transport.Send() 方法完成消息的发送.
 				if islead {
 					// gofail: var raftBeforeLeaderSend struct{}
+					//
+					// Ready.Messages 字段中保存了当前节点中等待发送到集群中其他节点的 Message 消息
 					r.transport.Send(r.processMessages(rd.Messages))
 				}
 
@@ -235,6 +286,8 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 				// ensure that recovery after a snapshot restore is possible.
 				if !raft.IsEmptySnap(rd.Snapshot) {
 					// gofail: var raftBeforeSaveSnap struct{}
+					//
+					// 将快照数据持久化到底层的持久化存储上
 					if err := r.storage.SaveSnap(rd.Snapshot); err != nil {
 						if r.lg != nil {
 							r.lg.Fatal("failed to save Raft snapshot", zap.Error(err))
@@ -246,6 +299,9 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 				}
 
 				// gofail: var raftBeforeSave struct{}
+				//
+				// 通过 raftNode.storage 将 Ready 实例中携带的 HardState 信息和待持久化的 Entry 记录写入 WAL 日志文件中
+				// 注意, 这里实际调用的是 WAL.Save() 方法.
 				if err := r.storage.Save(rd.HardState, rd.Entries); err != nil {
 					if r.lg != nil {
 						r.lg.Fatal("failed to save Raft hard state and entries", zap.Error(err))
@@ -253,6 +309,7 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 						plog.Fatalf("failed to save state and entries error: %v", err)
 					}
 				}
+				// 根据 HardState 信息, 记录相关的监控信息
 				if !raft.IsEmptyHardState(rd.HardState) {
 					proposalsCommitted.Set(float64(rd.HardState.Commit))
 				}
@@ -263,6 +320,8 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 					// old data from the WAL. Otherwise could get an error like:
 					// panic: tocommit(107) is out of range [lastIndex(84)]. Was the raft log corrupted, truncated, or lost?
 					// See https://github.com/etcd-io/etcd/issues/10219 for more details.
+					//
+					// 实际调用 WAL.Sync() 方法
 					if err := r.storage.Sync(); err != nil {
 						if r.lg != nil {
 							r.lg.Fatal("failed to sync Raft snapshot", zap.Error(err))
@@ -272,9 +331,15 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 					}
 
 					// etcdserver now claim the snapshot has been persisted onto the disk
+					//
+					// EtcdServer 中会启动后台 goroutine 读取 applyc 通道, 并处理 apply 中封装的快照数据.
+					// 这里使用 notifyc 通道通知该后台 goroutine, 该 apply 实例中的快照数据已经被持久化到磁盘,
+					// 后台 goroutine 可以开始应用该快照数据了.
 					notifyc <- struct{}{}
 
 					// gofail: var raftBeforeApplySnap struct{}
+					//
+					// 将快照数据保存到 MemoryStorage 中
 					r.raftStorage.ApplySnapshot(rd.Snapshot)
 					if r.lg != nil {
 						r.lg.Info("applied incoming Raft snapshot", zap.Uint64("snapshot-index", rd.Snapshot.Metadata.Index))
@@ -293,13 +358,19 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 					// gofail: var raftAfterWALRelease struct{}
 				}
 
+				// 将待持久化的 Entry 记录写入 MemoryStorage 中
 				r.raftStorage.Append(rd.Entries)
 
+				// 非 Leader 节点, 则处理待发送的消息
 				if !islead {
 					// finish processing incoming messages before we signal raftdone chan
+					//
+					// 过滤消息
 					msgs := r.processMessages(rd.Messages)
 
 					// now unblocks 'applyAll' that waits on Raft log disk writes before triggering snapshots
+					//
+					// 处理 Ready 实例的过程基本结束, 这里会通知 EtcdServer 启动的后台 goroutine, 检测是否生成快照
 					notifyc <- struct{}{}
 
 					// Candidate or follower needs to wait for all pending configuration
@@ -328,12 +399,18 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 					}
 
 					// gofail: var raftBeforeFollowerSend struct{}
+					//
+					// 发送消息
 					r.transport.Send(msgs)
-				} else {
+				} else { // 当前为 Leader 节点
 					// leader already processed 'MsgSnap' and signaled
+					//
+					// 处理 Ready 实例的过程基本结束, 这里会通知 EtcdServer 启动的后台 goroutine, 检测是否生成快照
 					notifyc <- struct{}{}
 				}
 
+				// 最后调用 raft.node.Advance() 方法, 通知 etcd-raft 模块此次 Ready 实例已经处理完成,
+				// etcd-raft 模块更新相应信息（如, 已应用 Entry 的最大索引值）之后, 可以继续返回 Ready 实例.
 				r.Advance()
 			case <-r.stopped:
 				return
@@ -355,13 +432,19 @@ func updateCommittedIndex(ap *apply, rh *raftReadyHandler) {
 	}
 }
 
+// processMessages 对消息进行过滤, 去除目标节点已被移出集群的消息, 然后分别过滤 MsgAppResp 消息、
+// MsgSnap 消息和 MsgHeartbeat 消息.
 func (r *raftNode) processMessages(ms []raftpb.Message) []raftpb.Message {
 	sentAppResp := false
+	// 从后向前遍历全部待发送的消息
 	for i := len(ms) - 1; i >= 0; i-- {
+		// 若消息的目标节点已从集群中移除
 		if r.isIDRemoved(ms[i].To) {
+			// 将消息的目标节点 ID 设置为 0, 这样在 etcd-raft 模块发送消息的过程中, 会忽略目标节点为 0 的消息
 			ms[i].To = 0
 		}
 
+		// 只会发送最后一条 MsgAppResp 消息, 没有必要同时发送多条 MsgAppResp 消息
 		if ms[i].Type == raftpb.MsgAppResp {
 			if sentAppResp {
 				ms[i].To = 0
@@ -370,20 +453,28 @@ func (r *raftNode) processMessages(ms []raftpb.Message) []raftpb.Message {
 			}
 		}
 
+		// 处理 MsgSnap 消息
 		if ms[i].Type == raftpb.MsgSnap {
 			// There are two separate data store: the store for v2, and the KV for v3.
 			// The msgSnap only contains the most recent snapshot of store without KV.
 			// So we need to redirect the msgSnap to etcd server main loop for merging in the
 			// current store snapshot and KV snapshot.
 			select {
+			// 将 MsgSnap 消息写入 msgSnapC 通道中
 			case r.msgSnapC <- ms[i]:
+
+			// 如果 msgSnapC 通道的缓冲区满了, 则放弃此次快照的发送
 			default:
 				// drop msgSnap if the inflight chan if full.
 			}
+			// 将目标节点设置为 0, 则 raftNode.transport 后续不会发送该消息
 			ms[i].To = 0
 		}
+		// 对 MsgHeartbeat 消息的处理
 		if ms[i].Type == raftpb.MsgHeartbeat {
+			// 通过 TimeoutDetector 进行检测, 检测发往目标节点的心跳消息间隔是否过大
 			ok, exceed := r.td.Observe(ms[i].To)
+			// 输出警告日志, 表示当前节点可能已经过载了
 			if !ok {
 				// TODO: limit request rate.
 				if r.lg != nil {
@@ -451,13 +542,16 @@ func (r *raftNode) advanceTicks(ticks int) {
 
 func startNode(cfg ServerConfig, cl *membership.RaftCluster, ids []types.ID) (id types.ID, n raft.Node, s *raft.MemoryStorage, w *wal.WAL) {
 	var err error
+	// 根据当前节点的名称, 在 RaftCluster 中查找对应的 Member 实例
 	member := cl.MemberByName(cfg.Name)
+	// 将节点的 id 和当前集群的 id 封装后进行序列化
 	metadata := pbutil.MustMarshal(
 		&pb.Metadata{
-			NodeID:    uint64(member.ID),
-			ClusterID: uint64(cl.ID()),
+			NodeID:    uint64(member.ID), // 节点的 id
+			ClusterID: uint64(cl.ID()),   // 集群的 id
 		},
 	)
+	// 创建 WAL 日志文件, 并将上述元数据信息作为第一条日志记录写入 WAL 日志文件中
 	if w, err = wal.Create(cfg.Logger, cfg.WALDir(), metadata); err != nil {
 		if cfg.Logger != nil {
 			cfg.Logger.Panic("failed to create WAL", zap.Error(err))
@@ -468,9 +562,11 @@ func startNode(cfg ServerConfig, cl *membership.RaftCluster, ids []types.ID) (id
 	if cfg.UnsafeNoFsync {
 		w.SetUnsafeNoFsync()
 	}
+	// 为集群中每个节点, 创建对应的 Peer 实例
 	peers := make([]raft.Peer, len(ids))
 	for i, id := range ids {
 		var ctx []byte
+		// 直接将 Member 实例序列化
 		ctx, err = json.Marshal((*cl).Member(id))
 		if err != nil {
 			if cfg.Logger != nil {
@@ -479,8 +575,10 @@ func startNode(cfg ServerConfig, cl *membership.RaftCluster, ids []types.ID) (id
 				plog.Panicf("marshal member should never fail: %v", err)
 			}
 		}
+		// 记录了节点 id 和 Member 实例序列化后的数据
 		peers[i] = raft.Peer{ID: uint64(id), Context: ctx}
 	}
+	// 当前节点的 id
 	id = member.ID
 	if cfg.Logger != nil {
 		cfg.Logger.Info(
@@ -491,7 +589,9 @@ func startNode(cfg ServerConfig, cl *membership.RaftCluster, ids []types.ID) (id
 	} else {
 		plog.Infof("starting member %s in cluster %s", id, cl.ID())
 	}
+	// 新建 MemoryStorage 实例
 	s = raft.NewMemoryStorage()
+	// 初始化 Node 实例时使用的相关配置
 	c := &raft.Config{
 		ID:              uint64(id),
 		ElectionTick:    cfg.ElectionTicks,
@@ -517,6 +617,7 @@ func startNode(cfg ServerConfig, cl *membership.RaftCluster, ids []types.ID) (id
 	if len(peers) == 0 {
 		n = raft.RestartNode(c)
 	} else {
+		// 创建并启动 raft.Node 实例
 		n = raft.StartNode(c, peers)
 	}
 	raftStatusMu.Lock()
@@ -525,11 +626,13 @@ func startNode(cfg ServerConfig, cl *membership.RaftCluster, ids []types.ID) (id
 	return id, n, s, w
 }
 
+// restartNode 根据配置信息和快照数据, 重启 etcd-raft 模块的 Node 实例.
 func restartNode(cfg ServerConfig, snapshot *raftpb.Snapshot) (types.ID, *membership.RaftCluster, raft.Node, *raft.MemoryStorage, *wal.WAL) {
 	var walsnap walpb.Snapshot
 	if snapshot != nil {
 		walsnap.Index, walsnap.Term = snapshot.Metadata.Index, snapshot.Metadata.Term
 	}
+	// 根据快照的元数据, 查找合适的 WAL 日志并完成 WAL 日志的回放
 	w, id, cid, st, ents := readWAL(cfg.Logger, cfg.WALDir(), walsnap, cfg.UnsafeNoFsync)
 
 	if cfg.Logger != nil {
@@ -544,11 +647,15 @@ func restartNode(cfg ServerConfig, snapshot *raftpb.Snapshot) (types.ID, *member
 	}
 	cl := membership.NewCluster(cfg.Logger, "")
 	cl.SetID(id, cid)
+	// 创建 MemoryStorage 实例
 	s := raft.NewMemoryStorage()
 	if snapshot != nil {
+		// 将快照数据记录到 MemoryStorage 实例中
 		s.ApplySnapshot(*snapshot)
 	}
+	// 根据 WAL 日志文件回放的结果设置 HardState
 	s.SetHardState(st)
+	// 向 MemoryStorage 实例中追加快照数据之后的 Entry 记录
 	s.Append(ents)
 	c := &raft.Config{
 		ID:              uint64(id),
@@ -573,6 +680,7 @@ func restartNode(cfg ServerConfig, snapshot *raftpb.Snapshot) (types.ID, *member
 		}
 	}
 
+	// 根据上面的 raft.Config, 重建 raft.Node 实例
 	n := raft.RestartNode(c)
 	raftStatusMu.Lock()
 	raftStatus = n.Status

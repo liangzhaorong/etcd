@@ -86,7 +86,9 @@ const (
 )
 
 type AuthInfo struct {
+	// 记录请求头中携带的 Username
 	Username string
+	// 记录请求头中携带的 Revision
 	Revision uint64
 }
 

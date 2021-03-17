@@ -69,6 +69,8 @@ func init() {
 }
 
 // Client provides and manages an etcd v3 client session.
+//
+// Client 结构体是 etcd V3 版本的客户端.
 type Client struct {
 	Cluster
 	KV
@@ -77,8 +79,10 @@ type Client struct {
 	Auth
 	Maintenance
 
+	// 与服务端交互的连接
 	conn *grpc.ClientConn
 
+	// Client 的相关配置都封装在该字段中
 	cfg           Config
 	creds         grpccredentials.TransportCredentials
 	resolverGroup *endpoint.ResolverGroup
@@ -88,6 +92,9 @@ type Client struct {
 	cancel context.CancelFunc
 
 	// Username is a user name for authentication.
+	//
+	// Username 和 Password 分别是当前客户端的用户名和密码, 当客户端正式发起请求之前,
+	// 会先通过用户名和密码检测相应权限.
 	Username string
 	// Password is a password for authentication.
 	Password        string
@@ -167,20 +174,27 @@ func (c *Client) SetEndpoints(eps ...string) {
 }
 
 // Sync synchronizes client's endpoints with the known endpoints from the etcd membership.
+//
+// Sync 会向集群请求当前的节点列表, 并更新本地缓存.
 func (c *Client) Sync(ctx context.Context) error {
+	// 通过 gRPC 请求集群的节点列表
 	mresp, err := c.MemberList(ctx)
 	if err != nil {
 		return err
 	}
 	var eps []string
+	// 遍历集群返回的节点列表
 	for _, m := range mresp.Members {
 		eps = append(eps, m.ClientURLs...)
 	}
+	// 更新 Client 记录的 URL 集合
 	c.SetEndpoints(eps...)
 	return nil
 }
 
+// autoSync 定时同步集群中各个节点暴露的 URL
 func (c *Client) autoSync() {
+	// 检测是否开启了自动同步
 	if c.cfg.AutoSyncInterval == time.Duration(0) {
 		return
 	}
@@ -189,8 +203,11 @@ func (c *Client) autoSync() {
 		select {
 		case <-c.ctx.Done():
 			return
+
+		// 间隔指定时间后, 进行一次同步
 		case <-time.After(c.cfg.AutoSyncInterval):
 			ctx, cancel := context.WithTimeout(c.ctx, 5*time.Second)
+			// 调用 Client.Sync() 方法进行同步
 			err := c.Sync(ctx)
 			cancel()
 			if err != nil && err != c.ctx.Err() {
@@ -320,6 +337,7 @@ func (c *Client) dialWithBalancer(ep string, dopts ...grpc.DialOption) (*grpc.Cl
 
 // dial configures and dials any grpc balancer target.
 func (c *Client) dial(target string, creds grpccredentials.TransportCredentials, dopts ...grpc.DialOption) (*grpc.ClientConn, error) {
+	// 创建连接使用的参数信息
 	opts, err := c.dialSetupOpts(creds, dopts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to configure dialer: %v", err)
@@ -357,6 +375,7 @@ func (c *Client) dial(target string, creds grpccredentials.TransportCredentials,
 		defer cancel() // TODO: Is this right for cases where grpc.WithBlock() is not set on the dial options?
 	}
 
+	// 创建连接
 	conn, err := grpc.DialContext(dctx, target, opts...)
 	if err != nil {
 		return nil, err
@@ -412,6 +431,7 @@ func newClient(cfg *Config) (*Client, error) {
 	}
 
 	ctx, cancel := context.WithCancel(baseCtx)
+	// 创建 Client 实例, 注意, 此时的 conn 字段还未初始化
 	client := &Client{
 		conn:     nil,
 		cfg:      *cfg,
@@ -432,6 +452,7 @@ func newClient(cfg *Config) (*Client, error) {
 		return nil, err
 	}
 
+	// 记录配置信息中携带的用户名和密码
 	if cfg.Username != "" && cfg.Password != "" {
 		client.Username = cfg.Username
 		client.Password = cfg.Password
@@ -466,10 +487,13 @@ func newClient(cfg *Config) (*Client, error) {
 	if len(cfg.Endpoints) < 1 {
 		return nil, fmt.Errorf("at least one Endpoint must is required in client config")
 	}
+	// 使用该 URL 进行连接
 	dialEndpoint := cfg.Endpoints[0]
 
 	// Use a provided endpoint target so that for https:// without any tls config given, then
 	// grpc will assume the certificate server name is the endpoint host.
+	//
+	// 建立网络连接
 	conn, err := client.dialWithBalancer(dialEndpoint, grpc.WithBalancerName(roundRobinBalancerName))
 	if err != nil {
 		client.cancel()
@@ -478,8 +502,9 @@ func newClient(cfg *Config) (*Client, error) {
 	}
 	// TODO: With the old grpc balancer interface, we waited until the dial timeout
 	// for the balancer to be ready. Is there an equivalent wait we should do with the new grpc balancer interface?
-	client.conn = conn
+	client.conn = conn // 初始化 Client.conn 字段
 
+	// 初始化各个组件的 gRPC 服务的客户端
 	client.Cluster = NewCluster(client)
 	client.KV = NewKV(client)
 	client.Lease = NewLease(client)
@@ -494,6 +519,7 @@ func newClient(cfg *Config) (*Client, error) {
 		}
 	}
 
+	// 启动一个后台 goroutine, 定时同步集群中各个节点暴露的 URL
 	go client.autoSync()
 	return client, nil
 }

@@ -16,6 +16,7 @@ package mvcc
 
 import "go.etcd.io/etcd/lease"
 
+// metricsTxnWrite 结构体同时实现了 TxnRead 和 TxnWrite 接口, 并在原有的功能上记录监控信息
 type metricsTxnWrite struct {
 	TxnWrite
 	ranges  uint

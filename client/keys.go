@@ -96,18 +96,25 @@ func NewKeysAPIWithPrefix(c Client, p string) KeysAPI {
 	}
 }
 
+// KeysAPI 接口定义了 Client v2 对键值对操作的方法
 type KeysAPI interface {
 	// Get retrieves a set of Nodes from etcd
+	//
+	// 查询键值对数据
 	Get(ctx context.Context, key string, opts *GetOptions) (*Response, error)
 
 	// Set assigns a new value to a Node identified by a given key. The caller
 	// may define a set of conditions in the SetOptions. If SetOptions.Dir=true
 	// then value is ignored.
+	//
+	// 添加新的键值对数据
 	Set(ctx context.Context, key, value string, opts *SetOptions) (*Response, error)
 
 	// Delete removes a Node identified by the given key, optionally destroying
 	// all of its children as well. The caller may define a set of required
 	// conditions in an DeleteOptions object.
+	//
+	// 删除指定的键值对数据
 	Delete(ctx context.Context, key string, opts *DeleteOptions) (*Response, error)
 
 	// Create is an alias for Set w/ PrevExist=false
@@ -123,6 +130,8 @@ type KeysAPI interface {
 	// by the given key. The Watcher may be configured at creation time
 	// through a WatcherOptions object. The returned Watcher is designed
 	// to emit events that happen to a Node, and optionally to its children.
+	//
+	// 添加 Watcher
 	Watcher(key string, opts *WatcherOptions) Watcher
 }
 
@@ -320,18 +329,21 @@ func (ns Nodes) Len() int           { return len(ns) }
 func (ns Nodes) Less(i, j int) bool { return ns[i].Key < ns[j].Key }
 func (ns Nodes) Swap(i, j int)      { ns[i], ns[j] = ns[j], ns[i] }
 
+// httpKeysAPI 结构体是 KeysAPI 接口的实现.
 type httpKeysAPI struct {
 	client httpClient
 	prefix string
 }
 
 func (k *httpKeysAPI) Set(ctx context.Context, key, val string, opts *SetOptions) (*Response, error) {
+	// 创建 setAction 实例
 	act := &setAction{
-		Prefix: k.prefix,
+		Prefix: k.prefix, // 前缀路径
 		Key:    key,
 		Value:  val,
 	}
 
+	// 在 setAction 中设置相应参数
 	if opts != nil {
 		act.PrevValue = opts.PrevValue
 		act.PrevIndex = opts.PrevIndex
@@ -346,6 +358,7 @@ func (k *httpKeysAPI) Set(ctx context.Context, key, val string, opts *SetOptions
 	if act.PrevExist == PrevNoExist {
 		doCtx = context.WithValue(doCtx, &oneShotCtxValue, &oneShotCtxValue)
 	}
+	// 向服务端发送 HTTP 请求
 	resp, body, err := k.client.Do(doCtx, act)
 	if err != nil {
 		return nil, err

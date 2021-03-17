@@ -35,6 +35,8 @@ const (
 	maxSendBytes      = math.MaxInt32
 )
 
+// Server 创建 grpc.Server 实例, 并完成 gRPC 服务的注册, 其中不仅完成了 KVServer 服务的注册,
+// 还完成了 WatcherServer 和 LeaseServer 多个其他服务的注册.
 func Server(s *etcdserver.EtcdServer, tls *tls.Config, gopts ...grpc.ServerOption) *grpc.Server {
 	var opts []grpc.ServerOption
 	opts = append(opts, grpc.CustomCodec(&codec{}))
@@ -56,7 +58,9 @@ func Server(s *etcdserver.EtcdServer, tls *tls.Config, gopts ...grpc.ServerOptio
 	opts = append(opts, grpc.MaxConcurrentStreams(maxStreams))
 	grpcServer := grpc.NewServer(append(opts, gopts...)...)
 
+	// 注册 KVServer
 	pb.RegisterKVServer(grpcServer, NewQuotaKVServer(s))
+	// 注册 WatchServer
 	pb.RegisterWatchServer(grpcServer, NewWatchServer(s))
 	pb.RegisterLeaseServer(grpcServer, NewQuotaLeaseServer(s))
 	pb.RegisterClusterServer(grpcServer, NewClusterServer(s))

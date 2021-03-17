@@ -21,6 +21,8 @@ import (
 	"go.etcd.io/etcd/pkg/types"
 )
 
+// urlPicker 每个节点可能提供多个 URL 供其他节点方法, 当其中一个访问失败时, 应可以尝试使用另一个.
+// 而 urlPicker 提供的主要功能就是在这些 URL 之间进行切换.
 type urlPicker struct {
 	mu     sync.Mutex // guards urls and picked
 	urls   types.URLs

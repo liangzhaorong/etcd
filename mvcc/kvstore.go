@@ -74,6 +74,7 @@ type StoreConfig struct {
 	CompactionBatchLimit int
 }
 
+// store 实现了 KV 接口.
 type store struct {
 	ReadView
 	WriteView
@@ -85,28 +86,43 @@ type store struct {
 	cfg StoreConfig
 
 	// mu read locks for txns and write locks for non-txn store changes.
+	//
+	// 在开启只读/读写事务时, 需要获取该锁进行同步, 即在 Read() 方法和 Write() 方法中获取该锁, 在 End() 方法中释放.
+	// 在进行压缩等非事务性的操作时, 需要加写锁进行同步.
 	mu sync.RWMutex
 
 	ig ConsistentIndexGetter
 
+	// 当前 store 实例关联的后端存储
 	b       backend.Backend
+	// 当前 store 实例关联的内存索引 treeIndex
 	kvindex index
 
+	// 租约
 	le lease.Lessor
 
 	// revMuLock protects currentRev and compactMainRev.
 	// Locked at end of write txn and released after write txn unlock lock.
 	// Locked before locking read txn and released after locking.
+	//
+	// 对 currentRev 字段的访问需要加该锁
 	revMu sync.RWMutex
 	// currentRev is the revision of the last completed transaction.
+	//
+	// 记录当前的 revision 信息（main revision 部分的值）
 	currentRev int64
 	// compactMainRev is the main revision of the last compaction.
+	//
+	// 记录最近一次压缩后最小的 revision 信息（main revision 部分的值）
 	compactMainRev int64
 
 	// bytesBuf8 is a byte slice of length 8
 	// to avoid a repetitive allocation in saveIndex.
+	//
+	// 索引缓冲区, 主要用于记录 ConsistentIndex
 	bytesBuf8 []byte
 
+	// FIFO 调度器
 	fifoSched schedule.Scheduler
 
 	stopc chan struct{}
@@ -122,14 +138,14 @@ func NewStore(lg *zap.Logger, b backend.Backend, le lease.Lessor, ig ConsistentI
 	}
 	s := &store{
 		cfg:     cfg,
-		b:       b,
+		b:       b, // 初始化 backend 字段
 		ig:      ig,
-		kvindex: newTreeIndex(lg),
+		kvindex: newTreeIndex(lg), // 初始化 kvindex 字段
 
 		le: le,
 
-		currentRev:     1,
-		compactMainRev: -1,
+		currentRev:     1,  // currentRev 字段初始化为 1
+		compactMainRev: -1, // compactMainRev 字段初始化为 -1
 
 		bytesBuf8: make([]byte, 8),
 		fifoSched: schedule.NewFIFOScheduler(),
@@ -138,21 +154,24 @@ func NewStore(lg *zap.Logger, b backend.Backend, le lease.Lessor, ig ConsistentI
 
 		lg: lg,
 	}
+	// 创建 readView 和 writeView 实例
 	s.ReadView = &readView{s}
 	s.WriteView = &writeView{s}
 	if s.le != nil {
 		s.le.SetRangeDeleter(func() lease.TxnDelete { return s.Write(traceutil.TODO()) })
 	}
 
+	// 获取 backend 的读写事务, 创建名为 "key" 和 "meta" 的两个 Bucket, 然后提交事务
 	tx := s.b.BatchTx()
-	tx.Lock()
-	tx.UnsafeCreateBucket(keyBucketName)
-	tx.UnsafeCreateBucket(metaBucketName)
+	tx.Lock() // 获取读写事务的锁
+	tx.UnsafeCreateBucket(keyBucketName)  // 创建名为 "key" 的 Bucket
+	tx.UnsafeCreateBucket(metaBucketName) // 创建名为 "meta" 的 Bucket
 	tx.Unlock()
-	s.b.ForceCommit()
+	s.b.ForceCommit() // 提交批量读写事务
 
-	s.mu.Lock()
+	s.mu.Lock() // 获取当前 store 实例的锁
 	defer s.mu.Unlock()
+	// 从 backend 中恢复当前 store 的所有状态, 其中包括内存中的 BTree 索引等
 	if err := s.restore(); err != nil {
 		// TODO: return the error instead of panic here?
 		panic("failed to recover store from backend")
@@ -274,23 +293,35 @@ func (s *store) updateCompactRev(rev int64) (<-chan struct{}, error) {
 	return nil, nil
 }
 
+// compact 实现键值对的压缩. 该方法首先将传入的参数转换成 revision 实例, 然后在 "meta" Bucket 中
+// 记录此次压缩的键值对信息（Key 为 scheduledCompactRev, Value 为 revision）, 之后调用 treeIndex.Compact()
+// 方法完成对内存索引的压缩, 最后通过 FIFO Scheduler 异步完成对 BoltDB 的压缩操作.
 func (s *store) compact(trace *traceutil.Trace, rev int64) (<-chan struct{}, error) {
 	ch := make(chan struct{})
+	// 定义执行压缩操作的 Job 函数
 	var j = func(ctx context.Context) {
 		if ctx.Err() != nil {
 			s.compactBarrier(ctx, ch)
 			return
 		}
+		// 记录当前时间, 主要是为了后面记录监控
 		start := time.Now()
+		// 将 BTree 中 main revision 部分小于 rev 部分的 revision 全部删除,
+		// 返回值是此次压缩过程中涉及的 revision 实例.
 		keep := s.kvindex.Compact(rev)
 		indexCompactionPauseMs.Observe(float64(time.Since(start) / time.Millisecond))
+		// 这里是对 BoltDB 进行压缩的地方
 		if !s.scheduleCompaction(rev, keep) {
 			s.compactBarrier(nil, ch)
 			return
 		}
+		// 当正常压缩后, 关闭 ch 通道, 通知其他监听的 goroutine
 		close(ch)
 	}
 
+	// store.fifoSched 是一个 FIFO Scheduler, 在 Scheduler 接口中定义了一个 Schedule(j Job) 方法,
+	// 该方法会将 Job 放入调度器进行调度, 其中的 Job 实际上就是一个 func(context.Context) 函数,
+	// 这里将对 BoltDB 的压缩操作（即上面定义的 j 函数）放入 FIFO 调度器中, 异步执行.
 	s.fifoSched.Schedule(j)
 	trace.Step("schedule compaction")
 	return ch, nil
@@ -341,38 +372,48 @@ func (s *store) Commit() {
 	s.b.ForceCommit()
 }
 
+// Restore Follower 节点在收到快照数据时, 会使用快照数据恢复当前节点的状态. 在这个恢复过程中就会调用
+// store.Restore() 方法完成内存索引和 store 中其他状态的恢复.
 func (s *store) Restore(b backend.Backend) error {
-	s.mu.Lock()
+	s.mu.Lock() // 获取 mu 上的写锁
 	defer s.mu.Unlock()
 
 	close(s.stopc)
-	s.fifoSched.Stop()
+	s.fifoSched.Stop() // 关闭当前的 FIFO Scheduler
 
 	atomic.StoreUint64(&s.consistentIndex, 0)
-	s.b = b
-	s.kvindex = newTreeIndex(s.lg)
-	s.currentRev = 1
+	s.b = b // 更新 store.b 字段, 指向新的 backend 实例
+	s.kvindex = newTreeIndex(s.lg) // 更新 store.kvindex 字段, 指向新的内存索引
+	s.currentRev = 1 // 重置 currentRev 字段和 compactMainRev 字段
 	s.compactMainRev = -1
-	s.fifoSched = schedule.NewFIFOScheduler()
+	s.fifoSched = schedule.NewFIFOScheduler() // 更新 fifoSched 字段, 指向新的 FIFO Scheduler
 	s.stopc = make(chan struct{})
 
+	// 调用 restore() 开始恢复内存索引
 	return s.restore()
 }
 
+// restore 恢复内存索引的大致逻辑是: 首先批量读取 BoltDB 中所有的键值对数据, 然后将每个键值对封装成 revKeyValue 实例,
+// 并写入一个通道中, 最后由另一个单独的 goroutine 读取该通道, 并完成内存索引的恢复.
 func (s *store) restore() error {
 	s.setupMetricsReporter()
 
+	// 创建 min 和 max, 后续在 BoltDB 中进行范围查询时的起始 key 和结束 key 就是 min 和 max
 	min, max := newRevBytes(), newRevBytes()
+	// min 为 "1_0"
 	revToBytes(revision{main: 1}, min)
+	// max 为 "MaxInt64_MaxInt64"
 	revToBytes(revision{main: math.MaxInt64, sub: math.MaxInt64}, max)
 
 	keyToLease := make(map[string]lease.LeaseID)
 
 	// restore index
-	tx := s.b.BatchTx()
+	tx := s.b.BatchTx() // 获取读写事务, 并加锁
 	tx.Lock()
 
+	// 调用 UnsafeRange() 方法, 在 "meta" Bucket 中查询上次的压缩完成时的相关记录（Key 为 "finishedCompactRev"）
 	_, finishedCompactBytes := tx.UnsafeRange(metaBucketName, finishedCompactKeyName, nil, 0)
+	// 根据查询结果, 恢复 store.compactMainRev 字段
 	if len(finishedCompactBytes) != 0 {
 		s.compactMainRev = bytesToRev(finishedCompactBytes[0]).main
 
@@ -387,38 +428,49 @@ func (s *store) restore() error {
 			plog.Printf("restore compact to %d", s.compactMainRev)
 		}
 	}
+	// 调用 UnsafeRange() 方法, 在 "meta" Bucket 中查询上次的压缩启动时的相关记录（Key 为 "scheduledCompactRev"）
 	_, scheduledCompactBytes := tx.UnsafeRange(metaBucketName, scheduledCompactKeyName, nil, 0)
 	scheduledCompact := int64(0)
+	// 根据查询结果, 更新 scheduledCompact 变量
 	if len(scheduledCompactBytes) != 0 {
 		scheduledCompact = bytesToRev(scheduledCompactBytes[0]).main
 	}
 
 	// index keys concurrently as they're loaded in from tx
 	keysGauge.Set(0)
+	// 在 restoreIntoIndex() 方法中会启动一个单独的 goroutine, 用于接收从 backend 中读取的键值对数据,
+	// 并恢复到新建的内存索引中（store.kvindex）. 注意, 该方法的返回值 rkvc 是一个通道, 也是当前 goroutine
+	// 与上述 goroutine 通信的桥梁.
 	rkvc, revc := restoreIntoIndex(s.lg, s.kvindex)
 	for {
+		// 调用 UnsafeRange() 方法查询 BoltDB 中的 "key" Bucket, 返回键值对数量的上限是（restoreChunkKeys）, 默认 10000
 		keys, vals := tx.UnsafeRange(keyBucketName, min, max, int64(restoreChunkKeys))
-		if len(keys) == 0 {
+		if len(keys) == 0 { // 查询结果为空, 则直接结束当前 for 循环
 			break
 		}
 		// rkvc blocks if the total pending keys exceeds the restore
 		// chunk size to keep keys from consuming too much memory.
+		//
+		// 将查询到的键值对数据写入 rkvc 这个通道中, 并由 restoreIntoIndex() 方法中创建的 goroutine 进行处理.
 		restoreChunk(s.lg, rkvc, keys, vals, keyToLease)
 		if len(keys) < restoreChunkKeys {
 			// partial set implies final set
-			break
+			break // 范围查询得到的结果数小于 restoreChunkKeys, 即表示最后一次查询
 		}
 		// next set begins after where this one ended
+		// 更新 min 作为下一次范围查询的起始 key
 		newMin := bytesToRev(keys[len(keys)-1][:revBytesLen])
 		newMin.sub++
 		revToBytes(newMin, min)
 	}
-	close(rkvc)
-	s.currentRev = <-revc
+	close(rkvc) // 关闭 rkvc 通道
+	s.currentRev = <-revc // 从 revc 通道中获取恢复之后的 currentRev
 
 	// keys in the range [compacted revision -N, compaction] might all be deleted due to compaction.
 	// the correct revision should be set to compaction revision in the case, not the largest revision
 	// we have seen.
+	//
+	// 矫正 currentRev 和 scheduledCompact 字段
 	if s.currentRev < s.compactMainRev {
 		s.currentRev = s.compactMainRev
 	}
@@ -430,6 +482,7 @@ func (s *store) restore() error {
 		if s.le == nil {
 			panic("no lessor to attach lease")
 		}
+		// 绑定键值对与指定的 Lease 实例
 		err := s.le.Attach(lid, []lease.LeaseItem{{Key: key}})
 		if err != nil {
 			if s.lg != nil {
@@ -444,8 +497,9 @@ func (s *store) restore() error {
 		}
 	}
 
-	tx.Unlock()
+	tx.Unlock() // 读写事务结束
 
+	// 如果在开始恢复之前, 存在未执行完的压缩操作, 则重启该压缩操作
 	if scheduledCompact != 0 {
 		s.compactLockfree(scheduledCompact)
 
@@ -465,21 +519,38 @@ func (s *store) restore() error {
 }
 
 type revKeyValue struct {
+	// BoltDB 中的 Key 值, 可以转换得到 revision 实例
 	key  []byte
+	// BoltDB 中保存的 Value 值
 	kv   mvccpb.KeyValue
+	// 原始的 Key 值
 	kstr string
 }
 
 func restoreIntoIndex(lg *zap.Logger, idx index) (chan<- revKeyValue, <-chan int64) {
+	// 创建两个通道, 其中 rkvc 通道就是用来传递 revKeyValue 实例的通道
 	rkvc, revc := make(chan revKeyValue, restoreChunkKeys), make(chan int64, 1)
+	// 启动一个单独 goroutine
 	go func() {
+		// 记录当前遇到的最大的 main revision 值
 		currentRev := int64(1)
+		// 在该 goroutine 结束时（即 rkvc 通道被关闭时）, 将当前已知的最大 main revision 值写入
+		// revc 通道中, 待其他 goroutine 读取.
 		defer func() { revc <- currentRev }()
 		// restore the tree index from streaming the unordered index.
+		//
+		// 虽然 BTree 的查找效率很高, 但是随着 BTree 层次的加深, 效率也随之下降, 这里使用 kiCache 这个 map
+		// 做了一层缓存, 更加高效地查找对应的 keyIndex 实例.
+		// 前面从 BoltDB 中读取到的键值对数据并不是按照原始 Key 值进行排序的, 如果直接向 BTree 中写入,
+		// 则可能会引起节点的分裂等变换操作, 效率比较低. 所以这里使用 kiCache 这个 map 做了一层缓存.
 		kiCache := make(map[string]*keyIndex, restoreChunkKeys)
+		// 从 rkvc 通道中读取 revKeyValue 实例
 		for rkv := range rkvc {
+			// 先查询 kiCache 缓存
 			ki, ok := kiCache[rkv.kstr]
 			// purge kiCache if many keys but still missing in the cache
+			//
+			// 如果 kiCache 中缓存了大量的 Key, 但是依然没有命中, 则清理缓存
 			if !ok && len(kiCache) >= restoreChunkKeys {
 				i := 10
 				for k := range kiCache {
@@ -490,6 +561,8 @@ func restoreIntoIndex(lg *zap.Logger, idx index) (chan<- revKeyValue, <-chan int
 				}
 			}
 			// cache miss, fetch from tree index if there
+			//
+			// 如果缓存未命中, 则从内存索引中查找对应的 keyIndex 实例, 并添加到缓存中.
 			if !ok {
 				ki = &keyIndex{key: rkv.kv.Key}
 				if idxKey := idx.KeyIndex(ki); idxKey != nil {
@@ -497,18 +570,25 @@ func restoreIntoIndex(lg *zap.Logger, idx index) (chan<- revKeyValue, <-chan int
 					ok = true
 				}
 			}
+			// 将 revKeyValue.key 转换成 revision 实例
 			rev := bytesToRev(rkv.key)
+			// 更新 currentRev 值
 			currentRev = rev.main
 			if ok {
+				// 若当前 revKeyValue 实例对应一个 tombstone 键值对
 				if isTombstone(rkv.key) {
+					// 在对应的 keyIndex 实例中插入 tombstone
 					ki.tombstone(lg, rev.main, rev.sub)
 					continue
 				}
+				// 在对应的 keyIndex 实例中添加正常的 revision 信息
 				ki.put(lg, rev.main, rev.sub)
 			} else if !isTombstone(rkv.key) {
+				// 如果从内存索引中依然未查询到对应的 keyIndex 实例, 则需要填充 keyIndex 实例中其他字段,
+				// 并添加到内存索引中.
 				ki.restore(lg, revision{rkv.kv.CreateRevision, 0}, rev, rkv.kv.Version)
 				idx.Insert(ki)
-				kiCache[rkv.kstr] = ki
+				kiCache[rkv.kstr] = ki // 同时会将该 keyIndex 实例添加到 kiCache 缓存中
 			}
 		}
 	}()
@@ -516,8 +596,11 @@ func restoreIntoIndex(lg *zap.Logger, idx index) (chan<- revKeyValue, <-chan int
 }
 
 func restoreChunk(lg *zap.Logger, kvc chan<- revKeyValue, keys, vals [][]byte, keyToLease map[string]lease.LeaseID) {
+	// 遍历读取到的 revision 信息
 	for i, key := range keys {
+		// 创建 revKeyValue 实例
 		rkv := revKeyValue{key: key}
+		// 反序列化得到 KeyValue
 		if err := rkv.kv.Unmarshal(vals[i]); err != nil {
 			if lg != nil {
 				lg.Fatal("failed to unmarshal mvccpb.KeyValue", zap.Error(err))
@@ -525,14 +608,20 @@ func restoreChunk(lg *zap.Logger, kvc chan<- revKeyValue, keys, vals [][]byte, k
 				plog.Fatalf("cannot unmarshal event: %v", err)
 			}
 		}
+		// 记录对应的原始 Key 值
 		rkv.kstr = string(rkv.kv.Key)
 		if isTombstone(key) {
+			// 删除 tombstone 标识的键值对
 			delete(keyToLease, rkv.kstr)
+
+		// 如果键值对有绑定的 Lease 实例, 则记录到 keyToLease 中
 		} else if lid := lease.LeaseID(rkv.kv.Lease); lid != lease.NoLease {
 			keyToLease[rkv.kstr] = lid
 		} else {
+			// 如果该键值对没有绑定的 Lease, 则从 keyToLease 中删除
 			delete(keyToLease, rkv.kstr)
 		}
+		// 将上述 revKeyValue 实例写入 rkvc 通道中, 等待处理
 		kvc <- rkv
 	}
 }
@@ -549,9 +638,12 @@ func (s *store) saveIndex(tx backend.BatchTx) {
 	}
 	bs := s.bytesBuf8
 	ci := s.ig.ConsistentIndex()
+	// 将 ConsistentIndex 值写入 bytesBuf8 缓冲区中
 	binary.BigEndian.PutUint64(bs, ci)
 	// put the index into the underlying backend
 	// tx has been locked in TxnBegin, so there is no need to lock it again
+	//
+	// 将 ConsistentIndex 值记录到 "meta" Bucket 中
 	tx.UnsafePut(metaBucketName, consistentIndexKeyName, bs)
 	atomic.StoreUint64(&s.consistentIndex, ci)
 }

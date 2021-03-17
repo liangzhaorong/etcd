@@ -176,6 +176,8 @@ type Config struct {
 	MaxTxnOps         uint  `json:"max-txn-ops"`
 	MaxRequestBytes   uint  `json:"max-request-bytes"`
 
+	// LPUrls 中记录了当前节点与集群中其他节点交互的 URL 地址;
+	// LCUrls 中记录了当前节点对客户端提供访问 URL 地址
 	LPUrls, LCUrls []url.URL
 	APUrls, ACUrls []url.URL
 	ClientTLSInfo  transport.TLSInfo

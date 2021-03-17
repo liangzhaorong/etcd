@@ -15,6 +15,8 @@ import (
 // Changing data while traversing with a cursor may cause it to be invalidated
 // and return unexpected keys and/or values. You must reposition your cursor
 // after mutating data.
+//
+// Cursor 表示一个迭代器, 该迭代器可按顺序遍历 Bucket 中的所有键值对.
 type Cursor struct {
 	bucket *Bucket
 	stack  []elemRef

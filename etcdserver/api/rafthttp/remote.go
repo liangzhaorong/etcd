@@ -21,6 +21,7 @@ import (
 	"go.uber.org/zap"
 )
 
+// remote 中只封装了 pipeline 实例, 主要负责发送快照数据, 帮助新加入的节点快速追赶上其他节点的数据.
 type remote struct {
 	lg       *zap.Logger
 	localID  types.ID

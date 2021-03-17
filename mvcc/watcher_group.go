@@ -29,39 +29,61 @@ var (
 	watchBatchMaxRevs = 1000
 )
 
+// eventBatch 为提高效率, etcd 的服务端一般会批量处理 watcher 事件, 在结构体 eventBatch 中
+// 可以封装多个 Event 事件.
 type eventBatch struct {
 	// evs is a batch of revision-ordered events
+	//
+	// 记录的 Event 实例时按照 revision 排序的
 	evs []mvccpb.Event
 	// revs is the minimum unique revisions observed for this batch
+	//
+	// 记录当前的 eventBatch 中记录的 Event 实例来自多少个不同的 main revision,
+	// 特别注意, 是不相同的 main revision 值的个数.
 	revs int
 	// moreRev is first revision with more events following this batch
+	//
+	// 由于当前 eventBatch 中记录的 Event 个数达到上限之后, 后续 Event 实例
+	// 无法加入该 eventBatch 中, 该字段记录了无法加入该 eventBatch 实例的第
+	// 一个 Event 实例对应的 main revision 值.
 	moreRev int64
 }
 
+// add 将 Event 实例添加到 eventBatch 中.
 func (eb *eventBatch) add(ev mvccpb.Event) {
+	// 检测 revs 是否达到上限, 若达到上限, 直接返回
 	if eb.revs > watchBatchMaxRevs {
 		// maxed out batch size
 		return
 	}
 
+	// 第一次添加 Event 实例
 	if len(eb.evs) == 0 {
 		// base case
 		eb.revs = 1
+		// 将 Event 实例添加到 evs 字段中保存
 		eb.evs = append(eb.evs, ev)
 		return
 	}
 
 	// revision accounting
+	// 获取最后一个 Event 实例对应的 main revision 值
 	ebRev := eb.evs[len(eb.evs)-1].Kv.ModRevision
+	// 新增 Event 实例对应的 main revision 值
 	evRev := ev.Kv.ModRevision
+	// 比较两个 main revision 值
 	if evRev > ebRev {
+		// 递增 revs 字段
 		eb.revs++
 		if eb.revs > watchBatchMaxRevs {
+			// 当前 eventBatch 实例中记录的 Event 实例已达上限, 则更新 moreRev 字段,
+			// 记录最后一个无法加入的 Event 实例的 main revision 值.
 			eb.moreRev = evRev
 			return
 		}
 	}
 
+	// 如果能继续添加 Event 实例, 则将 Event 实例添加到 evs 中.
 	eb.evs = append(eb.evs, ev)
 }
 
@@ -73,6 +95,7 @@ func (wb watcherBatch) add(w *watcher, ev mvccpb.Event) {
 		eb = &eventBatch{}
 		wb[w] = eb
 	}
+	// 将传入事件 ev 添加到 eventBatch 中
 	eb.add(ev)
 }
 
@@ -84,6 +107,7 @@ func newWatcherBatch(wg *watcherGroup, evs []mvccpb.Event) watcherBatch {
 	}
 
 	wb := make(watcherBatch)
+	// 遍历所有事件
 	for _, ev := range evs {
 		for w := range wg.watcherSetByKey(string(ev.Kv.Key)) {
 			if ev.Kv.ModRevision >= w.minRev {
@@ -146,10 +170,22 @@ func (w watcherSetByKey) delete(wa *watcher) bool {
 // watcherGroup is a collection of watchers organized by their ranges
 type watcherGroup struct {
 	// keyWatchers has the watchers that watch on a single key
+	//
+	// 记录监听单个 Key 的 watcher 实例, watcherSetByKey 实际上就是 map[string]watcherSet 类型, 该 map 中的 key
+	// 就是监听的原始 Key 值. watcherSetByKey 提供了 add() 和 delete() 两个方法, 分别用来添加和删除指定的 watcher
+	// 实例.
 	keyWatchers watcherSetByKey
 	// ranges has the watchers that watch a range; it is sorted by interval
+	//
+	// 记录进行范围监听的 watcher 实例, IntervalTree（线段树）是二叉树的一种变形, 线段树将一个区间划分成一些单元区间,
+	// 每一个区间对应线段树的一个叶节点. 假设在线段树中一个非叶子节点 [a, b], 那么它的左儿子节点表示的区间范围是 [a, (a+b)/2],
+	// 右儿子节点表示的区间范围为 ([a+b]/2+1, b), 其所有叶子节点连接起来就表示整个线段的长度.
 	ranges adt.IntervalTree
 	// watchers is the set of all watchers
+	//
+	// 记录了当前 watcherGroup 实例中全部的 watcher 实例, 这里的 watcherSet 实际上就是 map[*watcher]struct{} 类型.
+	// 在 watcherSet 中定义了 add()、delete() 和 union() 三个方法, 分别用来添加、删除 watcher 实例和合并其他 watcherSet
+	// 实例.
 	watchers watcherSet
 }
 
@@ -162,21 +198,30 @@ func newWatcherGroup() watcherGroup {
 }
 
 // add puts a watcher in the group.
+//
+// add 添加一个 watcher 实例到 watcherGroup 中.
 func (wg *watcherGroup) add(wa *watcher) {
+	// 首先将 watcher 实例添加到 watchers 字段中保存
 	wg.watchers.add(wa)
+	// watcher.end 为空表示只监听单个 Key, 则将其添加到 keyWatchers 中保存
 	if wa.end == nil {
 		wg.keyWatchers.add(wa)
 		return
 	}
 
+	// 如果待添加的是范围 watcher, 则执行下面的添加逻辑
+
 	// interval already registered?
+	// 根据待添加 watcher 的 key 和 end 字段创建 IntervalTree 中的一个节点
 	ivl := adt.NewStringAffineInterval(string(wa.key), string(wa.end))
 	if iv := wg.ranges.Find(ivl); iv != nil {
+		// 如果在 IntervalTree 中查找到了对应节点, 则将该 watcher 添加到对应的 watcherSet 中
 		iv.Val.(watcherSet).add(wa)
 		return
 	}
 
 	// not registered, put in interval tree
+	// 当前 IntervalTree 中没有对应节点, 则创建对应的 watcherSet, 并添加到 IntervalTree 中
 	ws := make(watcherSet)
 	ws.add(wa)
 	wg.ranges.Insert(ivl, ws)
@@ -221,11 +266,18 @@ func (wg *watcherGroup) delete(wa *watcher) bool {
 }
 
 // choose selects watchers from the watcher group to update
+//
+// choose 该方法根据 unsynced watcherGroup 中记录的 watcher 个数对其进行分批返回. 另外, 它还会获取该批 watcher
+// 实例中查找最小的 minRev 字段.
 func (wg *watcherGroup) choose(maxWatchers int, curRev, compactRev int64) (*watcherGroup, int64) {
+	// 当前 unsynced watcherGroup 中记录的 watcher 个数未达到指定上限（默认值为 512）, 则直接调用
+	// unsynced watcherGroup 中的 chooseAll() 方法获取所有未完成同步的 watcher 中最小的 minRev.
 	if len(wg.watchers) < maxWatchers {
 		return wg, wg.chooseAll(curRev, compactRev)
 	}
-	ret := newWatcherGroup()
+	// 如果当前 unsynced watcherGroup 中的 watcher 个数超过指定上限, 则需要分批处理
+	ret := newWatcherGroup() // 创建新的 watcherGroup 实例
+	// 从 unsynced watcherGroup 中遍历得到指定量的 watcher, 并添加到新建的 watcherGroup 实例中
 	for w := range wg.watchers {
 		if maxWatchers <= 0 {
 			break
@@ -233,11 +285,14 @@ func (wg *watcherGroup) choose(maxWatchers int, curRev, compactRev int64) (*watc
 		maxWatchers--
 		ret.add(w)
 	}
+	// 依然通过 chooseAll() 方法从该批 watcher 实例中查找最小的 minRev 值
 	return &ret, ret.chooseAll(curRev, compactRev)
 }
 
+// chooseAll 遍历 watcherGroup 中记录的全部 watcher 实例, 记录其中最小的 minRev 字段值并返回.
 func (wg *watcherGroup) chooseAll(curRev, compactRev int64) int64 {
-	minRev := int64(math.MaxInt64)
+	minRev := int64(math.MaxInt64) // 用于记录该 watcherGroup 中最小的 minRev 值
+	// 遍历 watcherGroup 中所有的 watcher 实例
 	for w := range wg.watchers {
 		if w.minRev > curRev {
 			// after network partition, possibly choosing future revision watcher from restore operation
@@ -250,16 +305,20 @@ func (wg *watcherGroup) chooseAll(curRev, compactRev int64) int64 {
 			// mark 'restore' done, since it's chosen
 			w.restore = false
 		}
+		// 该 watcher 因为压缩操作而被删除
 		if w.minRev < compactRev {
 			select {
+			// 创建 watcherResponse（注意, 其 CompactRevision 字段是有值的）, 并写入 watcher.ch 通道
 			case w.ch <- WatchResponse{WatchID: w.id, CompactRevision: compactRev}:
-				w.compacted = true
-				wg.delete(w)
+				w.compacted = true // 将 watcher.compacted 设置为 true, 表示因压缩操作而被删除
+				wg.delete(w)       // 将该 watcher 实例从 watcherGroup 中删除
 			default:
 				// retry next time
+				// 如果 watcher.ch 通道阻塞, 则下次调用 chooseAll() 方法时再尝试重新删除该 watcher 实例
 			}
 			continue
 		}
+		// 更新 minRev, 记录最小的 watcher.minRev 字段
 		if minRev > w.minRev {
 			minRev = w.minRev
 		}

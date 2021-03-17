@@ -35,6 +35,7 @@ type Wait interface {
 
 type list struct {
 	l sync.RWMutex
+	// 记录请求 id 与 chan interface 之间的映射
 	m map[uint64]chan interface{}
 }
 
@@ -46,7 +47,9 @@ func New() Wait {
 func (w *list) Register(id uint64) <-chan interface{} {
 	w.l.Lock()
 	defer w.l.Unlock()
+	// 查询指定请求 id 的通道是否存在
 	ch := w.m[id]
+	// 不存在, 则创建一个新的通道, 并添加到该 m 字段中
 	if ch == nil {
 		ch = make(chan interface{}, 1)
 		w.m[id] = ch

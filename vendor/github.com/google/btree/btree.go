@@ -680,6 +680,8 @@ func (c *copyOnWriteContext) freeNode(n *node) freeType {
 // Otherwise, nil is returned.
 //
 // nil cannot be added to the tree (will panic).
+//
+// ReplaceOrInsert 向该 BTree 中添加元素并返回 nil, 如果待添加的元素已存在, 则将其删除并返回
 func (t *BTree) ReplaceOrInsert(item Item) Item {
 	if item == nil {
 		panic("nil item being added to BTree")
@@ -708,18 +710,24 @@ func (t *BTree) ReplaceOrInsert(item Item) Item {
 
 // Delete removes an item equal to the passed in item from the tree, returning
 // it.  If no such item exists, returns nil.
+//
+// Delete 删除 BTree 中指定元素
 func (t *BTree) Delete(item Item) Item {
 	return t.deleteItem(item, removeItem)
 }
 
 // DeleteMin removes the smallest item in the tree and returns it.
 // If no such item exists, returns nil.
+//
+// DeleteMin 删除该 BTree 中的最小元素
 func (t *BTree) DeleteMin() Item {
 	return t.deleteItem(nil, removeMin)
 }
 
 // DeleteMax removes the largest item in the tree and returns it.
 // If no such item exists, returns nil.
+//
+// DeleteMax 删除该 BTree 中的最大元素
 func (t *BTree) DeleteMax() Item {
 	return t.deleteItem(nil, removeMax)
 }
@@ -743,6 +751,8 @@ func (t *BTree) deleteItem(item Item, typ toRemove) Item {
 
 // AscendRange calls the iterator for every value in the tree within the range
 // [greaterOrEqual, lessThan), until iterator returns false.
+//
+// AscendRange 正序遍历 BTree 中的元素, 且只会处理 greaterOrEqual 到 lessThan 之间的元素（正序）
 func (t *BTree) AscendRange(greaterOrEqual, lessThan Item, iterator ItemIterator) {
 	if t.root == nil {
 		return
@@ -752,6 +762,8 @@ func (t *BTree) AscendRange(greaterOrEqual, lessThan Item, iterator ItemIterator
 
 // AscendLessThan calls the iterator for every value in the tree within the range
 // [first, pivot), until iterator returns false.
+//
+// AscendLessThan 正序遍历 BTree 中的元素, 且只会处理比 pivot 小的元素（正序）
 func (t *BTree) AscendLessThan(pivot Item, iterator ItemIterator) {
 	if t.root == nil {
 		return
@@ -761,6 +773,8 @@ func (t *BTree) AscendLessThan(pivot Item, iterator ItemIterator) {
 
 // AscendGreaterOrEqual calls the iterator for every value in the tree within
 // the range [pivot, last], until iterator returns false.
+//
+// AscendGreaterOrEqual 正序遍历 BTree 中的元素, 且只会处理比 pivot 大的元素（正序）
 func (t *BTree) AscendGreaterOrEqual(pivot Item, iterator ItemIterator) {
 	if t.root == nil {
 		return
@@ -770,6 +784,8 @@ func (t *BTree) AscendGreaterOrEqual(pivot Item, iterator ItemIterator) {
 
 // Ascend calls the iterator for every value in the tree within the range
 // [first, last], until iterator returns false.
+//
+// Ascend 正序遍历并处理当前 BTree 中的所有元素
 func (t *BTree) Ascend(iterator ItemIterator) {
 	if t.root == nil {
 		return
@@ -806,6 +822,8 @@ func (t *BTree) DescendGreaterThan(pivot Item, iterator ItemIterator) {
 
 // Descend calls the iterator for every value in the tree within the range
 // [last, first], until iterator returns false.
+//
+// Descend 逆序处理 BTree 中所有的元素
 func (t *BTree) Descend(iterator ItemIterator) {
 	if t.root == nil {
 		return
@@ -815,6 +833,8 @@ func (t *BTree) Descend(iterator ItemIterator) {
 
 // Get looks for the key item in the tree, returning it.  It returns nil if
 // unable to find that item.
+//
+// Get 获取当前 BTree 实例中的指定元素
 func (t *BTree) Get(key Item) Item {
 	if t.root == nil {
 		return nil
@@ -823,21 +843,29 @@ func (t *BTree) Get(key Item) Item {
 }
 
 // Min returns the smallest item in the tree, or nil if the tree is empty.
+//
+// MinMax 获取 BTree 中最小的元素
 func (t *BTree) Min() Item {
 	return min(t.root)
 }
 
 // Max returns the largest item in the tree, or nil if the tree is empty.
+//
+// Max 获取 BTree 中最大的元素
 func (t *BTree) Max() Item {
 	return max(t.root)
 }
 
 // Has returns true if the given key is in the tree.
+//
+// Has 检测 BTree 中是否存在指定元素
 func (t *BTree) Has(key Item) bool {
 	return t.Get(key) != nil
 }
 
 // Len returns the number of items currently in the tree.
+//
+// Len 获取 BTree 中的元素个数
 func (t *BTree) Len() int {
 	return t.length
 }
@@ -862,6 +890,8 @@ func (t *BTree) Len() int {
 //   O(tree size):  when all nodes are owned by another tree, all nodes are
 //       iterated over looking for nodes to add to the freelist, and due to
 //       ownership, none are.
+//
+// Clear 清空当前 BTree 中的全部元素
 func (t *BTree) Clear(addNodesToFreelist bool) {
 	if t.root != nil && addNodesToFreelist {
 		t.root.reset(t.cow)

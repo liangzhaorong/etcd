@@ -89,6 +89,7 @@ func (sctx *serveCtx) serve(
 	errHandler func(error),
 	gopts ...grpc.ServerOption) (err error) {
 	logger := defaultLog.New(ioutil.Discard, "etcdhttp", 0)
+	// 当 EtcdServer 完全初始化之后会关闭 EtcdServer.readych 通道, 因此在这里阻塞监听 EtcdServer.readych 通道.
 	<-s.ReadyNotify()
 
 	if sctx.lg == nil {
@@ -108,6 +109,7 @@ func (sctx *serveCtx) serve(
 	}()
 
 	if sctx.insecure {
+		// 创建 grpc.Server 实例, 并完成 GRPC 服务的注册
 		gs = v3rpc.Server(s, nil, gopts...)
 		v3electionpb.RegisterElectionServer(gs, servElection)
 		v3lockpb.RegisterLockServer(gs, servLock)
@@ -115,6 +117,7 @@ func (sctx *serveCtx) serve(
 			sctx.serviceRegister(gs)
 		}
 		grpcl := m.Match(cmux.HTTP2())
+		// 在单独的后台 goroutine 中启动 GRPC 服务
 		go func() { errHandler(gs.Serve(grpcl)) }()
 
 		var gwmux *gw.ServeMux
@@ -132,8 +135,10 @@ func (sctx *serveCtx) serve(
 			ErrorLog: logger, // do not log user error
 		}
 		httpl := m.Match(cmux.HTTP1())
+		// 在单独的后台 goroutine 中启动一个 http.Server 实例, 用来处理 Client v2 请求
 		go func() { errHandler(srvhttp.Serve(httpl)) }()
 
+		// 将 grpc.Server 和处理 Client v2 请求的 http.Server 封装成 servers 实例, 然后将其写入该 sctx.serversC 通道中
 		sctx.serversC <- &servers{grpc: gs, http: srvhttp}
 		if sctx.lg != nil {
 			sctx.lg.Info(
@@ -145,6 +150,7 @@ func (sctx *serveCtx) serve(
 		}
 	}
 
+	// 加密场景下的初始化与上面类似
 	if sctx.secure {
 		tlscfg, tlsErr := tlsinfo.ServerConfig()
 		if tlsErr != nil {

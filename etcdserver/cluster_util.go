@@ -34,16 +34,23 @@ import (
 
 // isMemberBootstrapped tries to check if the given member has been bootstrapped
 // in the given cluster.
+//
+// isMemberBootstrapped 会请求远端节点, 然后检测当前集群中是否已存在相同的节点
 func isMemberBootstrapped(lg *zap.Logger, cl *membership.RaftCluster, member string, rt http.RoundTripper, timeout time.Duration) bool {
+	// 从远端节点获取集群信息, 并返回 RaftCluster 实例
 	rcl, err := getClusterFromRemotePeers(lg, getRemotePeerURLs(cl, member), timeout, false, rt)
 	if err != nil {
 		return false
 	}
+	// 从本地 RaftCluster 实例中获取当前节点名称对应的 id 值
 	id := cl.MemberByName(member).ID
+	// 尝试从远端获取的 RaftCluster 实例中获取本地节点 id 对应的 Member 实例
 	m := rcl.Member(id)
+	// 未存在相同节点, 直接返回 false
 	if m == nil {
 		return false
 	}
+	// 检测已启动的相同节点是否对 Client 暴露了 URL
 	if len(m.ClientURLs) > 0 {
 		return true
 	}
@@ -57,17 +64,23 @@ func isMemberBootstrapped(lg *zap.Logger, cl *membership.RaftCluster, member str
 // response, an error is returned.
 // Each request has a 10-second timeout. Because the upper limit of TTL is 5s,
 // 10 second is enough for building connection and finishing request.
+//
+// GetClusterFromRemotePeers 函数底层通过调用 getClusterFromRemotePeers() 函数实现, 其中会从集群
+// 中其他节点请求当前集群的信息, 然后封装成 RaftCluster 实例返回.
 func GetClusterFromRemotePeers(lg *zap.Logger, urls []string, rt http.RoundTripper) (*membership.RaftCluster, error) {
 	return getClusterFromRemotePeers(lg, urls, 10*time.Second, true, rt)
 }
 
 // If logerr is true, it prints out more error messages.
 func getClusterFromRemotePeers(lg *zap.Logger, urls []string, timeout time.Duration, logerr bool, rt http.RoundTripper) (*membership.RaftCluster, error) {
+	// 创建一个 HTTP 客户端
 	cc := &http.Client{
 		Transport: rt,
 		Timeout:   timeout,
 	}
+	// 请求集群中其他节点, 获取集群信息, 如果发生错误, 则换一个节点请求
 	for _, u := range urls {
+		// 请求集群中其他节点提供的 HTTP 接口（members）
 		addr := u + "/members"
 		resp, err := cc.Get(addr)
 		if err != nil {
@@ -80,6 +93,7 @@ func getClusterFromRemotePeers(lg *zap.Logger, urls []string, timeout time.Durat
 			}
 			continue
 		}
+		// 读取响应, 响应内容是 JSON 格式
 		b, err := ioutil.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
@@ -93,6 +107,7 @@ func getClusterFromRemotePeers(lg *zap.Logger, urls []string, timeout time.Durat
 			continue
 		}
 		var membs []*membership.Member
+		// 解析 JSON 得到 Member 实例数组
 		if err = json.Unmarshal(b, &membs); err != nil {
 			if logerr {
 				if lg != nil {
@@ -103,6 +118,7 @@ func getClusterFromRemotePeers(lg *zap.Logger, urls []string, timeout time.Durat
 			}
 			continue
 		}
+		// 从响应头中获取集群 ID
 		id, err := types.IDFromString(resp.Header.Get("X-Etcd-Cluster-ID"))
 		if err != nil {
 			if logerr {
@@ -124,6 +140,8 @@ func getClusterFromRemotePeers(lg *zap.Logger, urls []string, timeout time.Durat
 		// if the membership members are present then prepare and return raft cluster
 		// if membership members are not present then the raft cluster formed will be
 		// an invalid empty cluster hence return failed to get raft cluster member(s) from the given urls error
+		//
+		// 创建 RaftCluster 实例并返回
 		if len(membs) > 0 {
 			return membership.NewClusterFromMembers(lg, "", id, membs), nil
 		}
@@ -134,14 +152,17 @@ func getClusterFromRemotePeers(lg *zap.Logger, urls []string, timeout time.Durat
 
 // getRemotePeerURLs returns peer urls of remote members in the cluster. The
 // returned list is sorted in ascending lexicographical order.
+//
+// getRemotePeerURLs 过滤当前节点提供的 URL 地址, 然后排序集群中其他节点暴露的 URL 地址并返回
 func getRemotePeerURLs(cl *membership.RaftCluster, local string) []string {
 	us := make([]string, 0)
 	for _, m := range cl.Members() {
-		if m.Name == local {
+		if m.Name == local { // 过滤本地节点
 			continue
 		}
 		us = append(us, m.PeerURLs...)
 	}
+	// 对其他节点的 URL 地址进行排序
 	sort.Strings(us)
 	return us
 }

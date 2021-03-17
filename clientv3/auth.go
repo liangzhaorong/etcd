@@ -54,6 +54,7 @@ const (
 
 type UserAddOptions authpb.UserAddOptions
 
+// Auth 负责权限相关的操作, 如, 添加用户或角色、为用户分配角色等.
 type Auth interface {
 	// AuthEnable enables auth of an etcd cluster.
 	AuthEnable(ctx context.Context) (*AuthEnableResponse, error)

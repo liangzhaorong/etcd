@@ -31,7 +31,10 @@ var (
 )
 
 type kvServer struct {
+	// 用于填充响应消息的头信息
 	hdr header
+	// 该 RaftKV 接口继承了 KVServer 接口. 在 NewKVServer() 函数中可看到,
+	// kvServer.kv 字段实际指向了 EtcdServer 实例.
 	kv  etcdserver.RaftKV
 	// maxTxnOps is the max operations per txn.
 	// e.g suppose maxTxnOps = 128.
@@ -45,15 +48,18 @@ func NewKVServer(s *etcdserver.EtcdServer) pb.KVServer {
 }
 
 func (s *kvServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeResponse, error) {
+	// 检测 RangeRequest 请求
 	if err := checkRangeRequest(r); err != nil {
 		return nil, err
 	}
 
+	// 将 RangeRequest 请求委托给 kvServer 中封装的 RaftKV（实际为 EtcdServer 实例）实现进行处理
 	resp, err := s.kv.Range(ctx, r)
 	if err != nil {
 		return nil, togRPCError(err)
 	}
 
+	// 调用 header.fill() 填充响应的头信息
 	s.hdr.fill(resp.Header)
 	return resp, nil
 }

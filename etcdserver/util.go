@@ -98,6 +98,7 @@ func newNotifier() *notifier {
 	}
 }
 
+// notify 关闭 notifier.c 通道
 func (nc *notifier) notify(err error) {
 	nc.err = err
 	close(nc.c)

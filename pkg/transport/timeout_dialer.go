@@ -19,10 +19,11 @@ import (
 	"time"
 )
 
+// rwTimeoutDialer 封装了带读写超时的 Dialer 实例
 type rwTimeoutDialer struct {
-	wtimeoutd  time.Duration
-	rdtimeoutd time.Duration
-	net.Dialer
+	wtimeoutd  time.Duration // 写请求超时时间
+	rdtimeoutd time.Duration // 读请求超时时间
+	net.Dialer               // 内嵌 net.Dialer
 }
 
 func (d *rwTimeoutDialer) Dial(network, address string) (net.Conn, error) {

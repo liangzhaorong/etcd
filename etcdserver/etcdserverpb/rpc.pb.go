@@ -263,25 +263,38 @@ func (m *ResponseHeader) GetRaftTerm() uint64 {
 	return 0
 }
 
+// RangeRequest 封装了 applierV3backend.Range() 方法进行查询时用到的相关参数.
 type RangeRequest struct {
 	// key is the first key for the range. If range_end is not given, the request only looks up key.
+	//
+	// 查询的起始 Key 值.
 	Key []byte `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
 	// range_end is the upper bound on the requested range [key, range_end).
 	// If range_end is '\0', the range is all keys >= key.
 	// If range_end is key plus one (e.g., "aa"+1 == "ab", "a\xff"+1 == "b"),
 	// then the range request gets all keys prefixed with key.
 	// If both key and range_end are '\0', then the range request returns all keys.
+	//
+	// 查询的结束 Key 值.
 	RangeEnd []byte `protobuf:"bytes,2,opt,name=range_end,json=rangeEnd,proto3" json:"range_end,omitempty"`
 	// limit is a limit on the number of keys returned for the request. When limit is set to 0,
 	// it is treated as no limit.
+	//
+	// 查询返回键值对的限制数, 如果将其设置为 0, 则表示无限制.
 	Limit int64 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
 	// revision is the point-in-time of the key-value store to use for the range.
 	// If revision is less or equal to zero, the range is over the newest key-value store.
 	// If the revision has been compacted, ErrCompacted is returned as a response.
+	//
+	// 查询在指定的 Revision 时的键值对信息.
 	Revision int64 `protobuf:"varint,4,opt,name=revision,proto3" json:"revision,omitempty"`
 	// sort_order is the order for returned sorted results.
+	//
+	// 查询结果集的排序方式（0 表示不进行排序, 1 表示正序排序, 2 表示反向排序）.
 	SortOrder RangeRequest_SortOrder `protobuf:"varint,5,opt,name=sort_order,json=sortOrder,proto3,enum=etcdserverpb.RangeRequest_SortOrder" json:"sort_order,omitempty"`
 	// sort_target is the key-value field to use for sorting.
+	//
+	// 查询结果集按照哪个字段进行排序（0~4 依次表示按照 Key、Version、Create、Mod、Value 进行排序）.
 	SortTarget RangeRequest_SortTarget `protobuf:"varint,6,opt,name=sort_target,json=sortTarget,proto3,enum=etcdserverpb.RangeRequest_SortTarget" json:"sort_target,omitempty"`
 	// serializable sets the range request to use serializable member-local reads.
 	// Range requests are linearizable by default; linearizable requests have higher
@@ -289,19 +302,33 @@ type RangeRequest struct {
 	// consensus of the cluster. For better performance, in exchange for possible stale reads,
 	// a serializable range request is served locally without needing to reach consensus
 	// with other nodes in the cluster.
+	//
+	// 默认的读操作是 Linearizable Read, 如果不需要 Linearizable Read 这种一致性, 则可将该字段设置为 true, 实现 Local Read.
+	//
+	// serializable read 请求会直接读取当前节点的数据并返回给客户端, 它并不保证返回给客户端的数据是集群中最新的, 如, 当前出现
+	// 了网络分区, 响应请求的节点是上一个 Term 的 Leader 节点.
+	// 而 linearizable read 请求的处理过程会通过 Raft 协议保证返回给客户端最新数据.
 	Serializable bool `protobuf:"varint,7,opt,name=serializable,proto3" json:"serializable,omitempty"`
 	// keys_only when set returns only the keys and not the values.
+	//
+	// 如果将该字段设置为 true, 则查询结果集中只包含键值对中的 Key 值, 不包含 Value 值.
 	KeysOnly bool `protobuf:"varint,8,opt,name=keys_only,json=keysOnly,proto3" json:"keys_only,omitempty"`
 	// count_only when set returns only the count of the keys in the range.
+	//
+	// 如果将该字段设置为 true, 则查询结果只返回符合查询条件的键值对个数, 而不包含键值对的其他信息.
 	CountOnly bool `protobuf:"varint,9,opt,name=count_only,json=countOnly,proto3" json:"count_only,omitempty"`
 	// min_mod_revision is the lower bound for returned key mod revisions; all keys with
 	// lesser mod revisions will be filtered away.
+	//
+	// MinModRevision 和 MaxModRevision 指定查询结果的 revision 范围.
 	MinModRevision int64 `protobuf:"varint,10,opt,name=min_mod_revision,json=minModRevision,proto3" json:"min_mod_revision,omitempty"`
 	// max_mod_revision is the upper bound for returned key mod revisions; all keys with
 	// greater mod revisions will be filtered away.
 	MaxModRevision int64 `protobuf:"varint,11,opt,name=max_mod_revision,json=maxModRevision,proto3" json:"max_mod_revision,omitempty"`
 	// min_create_revision is the lower bound for returned key create revisions; all keys with
 	// lesser create revisions will be filtered away.
+	//
+	// MinCreateRevision 和 MaxCreateRevision 指定查询结果的 CreateRevision 范围.
 	MinCreateRevision int64 `protobuf:"varint,12,opt,name=min_create_revision,json=minCreateRevision,proto3" json:"min_create_revision,omitempty"`
 	// max_create_revision is the upper bound for returned key create revisions; all keys with
 	// greater create revisions will be filtered away.
@@ -450,20 +477,32 @@ func (m *RangeResponse) GetCount() int64 {
 
 type PutRequest struct {
 	// key is the key, in bytes, to put into the key-value store.
+	//
+	// 此次请求的目标 Key 值.
 	Key []byte `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
 	// value is the value, in bytes, to associate with the key in the key-value store.
+	//
+	// 此次请求更新后的 Value 值.
 	Value []byte `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
 	// lease is the lease ID to associate with the key in the key-value store. A lease
 	// value of 0 indicates no lease.
 	Lease int64 `protobuf:"varint,3,opt,name=lease,proto3" json:"lease,omitempty"`
 	// If prev_kv is set, etcd gets the previous key-value pair before changing it.
 	// The previous key-value pair will be returned in the put response.
+	//
+	// 如果该字段设置为 true, 则在进行修改之前会获取原始的键值对, 并将其封装到 PutResponse 中.
 	PrevKv bool `protobuf:"varint,4,opt,name=prev_kv,json=prevKv,proto3" json:"prev_kv,omitempty"`
 	// If ignore_value is set, etcd updates the key using its current value.
 	// Returns an error if the key does not exist.
+	//
+	// 如果该字段设置为 true, 则表示此次请求不会更新 Value 值. 如果此次请求中指定的 Key 不存在,
+	// 则返回 ErrkeyNotFound 错误.
 	IgnoreValue bool `protobuf:"varint,5,opt,name=ignore_value,json=ignoreValue,proto3" json:"ignore_value,omitempty"`
 	// If ignore_lease is set, etcd updates the key using its current lease.
 	// Returns an error if the key does not exist.
+	//
+	// 如果该字段设置为 true, 则表示此次请求不会更新对应键值对的 Lease. 如果此次请求中指定的 Key 不存在,
+	// 则返回 ErrkeyNotFound 错误.
 	IgnoreLease bool `protobuf:"varint,6,opt,name=ignore_lease,json=ignoreLease,proto3" json:"ignore_lease,omitempty"`
 }
 
@@ -539,17 +578,24 @@ func (m *PutResponse) GetPrevKv() *mvccpb.KeyValue {
 	return nil
 }
 
+// DeleteRangeRequest 中封装了 applierV3backend.DeleteRange() 方法删除键值对时使用到的参数.
 type DeleteRangeRequest struct {
 	// key is the first key to delete in the range.
+	//
+	// 删除的起始 Key 值.
 	Key []byte `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
 	// range_end is the key following the last key to delete for the range [key, range_end).
 	// If range_end is not given, the range is defined to contain only the key argument.
 	// If range_end is one bit larger than the given key, then the range is all the keys
 	// with the prefix (the given key).
 	// If range_end is '\0', the range is all keys greater than or equal to the key argument.
+	//
+	// 删除的结束 Key 值, 如果未指定该值, 则表示只删除上面的 Key 字段指定的键值对.
 	RangeEnd []byte `protobuf:"bytes,2,opt,name=range_end,json=rangeEnd,proto3" json:"range_end,omitempty"`
 	// If prev_kv is set, etcd gets the previous key-value pairs before deleting it.
 	// The previous key-value pairs will be returned in the delete response.
+	//
+	// 如果该字段设置为 true, 则会返回删除前的键值对信息.
 	PrevKv bool `protobuf:"varint,3,opt,name=prev_kv,json=prevKv,proto3" json:"prev_kv,omitempty"`
 }
 
@@ -991,8 +1037,12 @@ type Compare struct {
 	// result is logical comparison operation for this comparison.
 	Result Compare_CompareResult `protobuf:"varint,1,opt,name=result,proto3,enum=etcdserverpb.Compare_CompareResult" json:"result,omitempty"`
 	// target is the key-value field to inspect for the comparison.
+	//
+	// 指定比较键值对中的哪个目标, 从 0~4 依次为 version、createRevison、modRevision、value、lease.
 	Target Compare_CompareTarget `protobuf:"varint,2,opt,name=target,proto3,enum=etcdserverpb.Compare_CompareTarget" json:"target,omitempty"`
 	// key is the subject key for the comparison operation.
+	//
+	// 比较操作的起始 Key 值
 	Key []byte `protobuf:"bytes,3,opt,name=key,proto3" json:"key,omitempty"`
 	// Types that are valid to be assigned to TargetUnion:
 	//	*Compare_Version
@@ -1000,9 +1050,13 @@ type Compare struct {
 	//	*Compare_ModRevision
 	//	*Compare_Value
 	//	*Compare_Lease
+	//
+	// Target 指定了比较 KeyValue 中的哪个字段, 而 TargetUnion 则记录了对应的值
 	TargetUnion isCompare_TargetUnion `protobuf_oneof:"target_union"`
 	// range_end compares the given target to all keys in the range [key, range_end).
 	// See RangeRequest for more details on key ranges.
+	//
+	// 比较操作的结束 Key 值
 	RangeEnd []byte `protobuf:"bytes,64,opt,name=range_end,json=rangeEnd,proto3" json:"range_end,omitempty"`
 }
 
@@ -1231,6 +1285,10 @@ func _Compare_OneofSizer(msg proto.Message) (n int) {
 // if guard evaluates to
 // true.
 // 3. A list of database operations called f op. Like t op, but executed if guard evaluates to false.
+//
+// TxnRequest 结构体中封装了批量操作需要的相关信息, 其中有三个字段, 分别是 Compare、Success 和 Failure,
+// 每个字段中都封装了多个操作. 在 Txn() 方法中, 首先会先执行该字段中指定的比较操作, 如果比较操作都返回 true,
+// 则执行 Success 字段中记录的操作, 反之, 则执行 Failure 字段中的操作.
 type TxnRequest struct {
 	// compare is a list of predicates representing a conjunction of terms.
 	// If the comparisons succeed, then the success requests will be processed in order,
@@ -2521,11 +2579,18 @@ type AlarmRequest struct {
 	// action is the kind of alarm request to issue. The action
 	// may GET alarm statuses, ACTIVATE an alarm, or DEACTIVATE a
 	// raised alarm.
+	//
+	// 该字段有 AlarmRequest_GET、AlarmRequest_ACTIVATE 和 AlarmRequest_DEACTIVATE 三种值, 分别对应使用
+	// AlarmStore.Get()、AlarmStore.Activate() 和 AlarmStore.Deactivate() 三个方法进行该 AlarmRequest 请求.
 	Action AlarmRequest_AlarmAction `protobuf:"varint,1,opt,name=action,proto3,enum=etcdserverpb.AlarmRequest_AlarmAction" json:"action,omitempty"`
 	// memberID is the ID of the member associated with the alarm. If memberID is 0, the
 	// alarm request covers all members.
+	//
+	// 记录发出该 AlarmRequest 请求的节点 ID.
 	MemberID uint64 `protobuf:"varint,2,opt,name=memberID,proto3" json:"memberID,omitempty"`
 	// alarm is the type of alarm to consider for this request.
+	//
+	// 记录该 AlarmRequest 请求相关的 Alarm 类型.
 	Alarm AlarmType `protobuf:"varint,3,opt,name=alarm,proto3,enum=etcdserverpb.AlarmType" json:"alarm,omitempty"`
 }
 

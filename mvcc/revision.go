@@ -25,11 +25,13 @@ const revBytesLen = 8 + 1 + 8
 // The set of changes that share same main revision changes the key-value space atomically.
 type revision struct {
 	// main is the main revision of a set of changes that happen atomically.
+	// 主版本号, 每个事务递增
 	main int64
 
 	// sub is the sub revision of a change in a set of changes that happen
 	// atomically. Each change has different increasing sub revision in that
 	// set.
+	// 次版本号, 同一个事务中多个操作递增
 	sub int64
 }
 
@@ -43,16 +45,19 @@ func (a revision) GreaterThan(b revision) bool {
 	return a.sub > b.sub
 }
 
+// newRevBytes 创建一个 []byte 实例
 func newRevBytes() []byte {
 	return make([]byte, revBytesLen, markedRevBytesLen)
 }
 
+// revToBytes 将 revision 转换成 BoltDB 中的 key
 func revToBytes(rev revision, bytes []byte) {
 	binary.BigEndian.PutUint64(bytes, uint64(rev.main))
 	bytes[8] = '_'
 	binary.BigEndian.PutUint64(bytes[9:], uint64(rev.sub))
 }
 
+// bytesToRev 将 BoltDB 中的 key 转换成 revision 结构
 func bytesToRev(bytes []byte) revision {
 	return revision{
 		main: int64(binary.BigEndian.Uint64(bytes[0:8])),

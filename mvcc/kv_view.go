@@ -19,6 +19,7 @@ import (
 	"go.etcd.io/etcd/pkg/traceutil"
 )
 
+// readView 结构体实现了 ReadView 接口（只读事务）.
 type readView struct{ kv KV }
 
 func (rv *readView) FirstRev() int64 {
@@ -39,6 +40,7 @@ func (rv *readView) Range(key, end []byte, ro RangeOptions) (r *RangeResult, err
 	return tr.Range(key, end, ro)
 }
 
+// writeView 实现了 WriteView 接口（读写事务）
 type writeView struct{ kv KV }
 
 func (wv *writeView) DeleteRange(key, end []byte) (n, rev int64) {

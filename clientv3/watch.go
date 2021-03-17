@@ -43,6 +43,7 @@ type Event mvccpb.Event
 
 type WatchChan <-chan WatchResponse
 
+// Watcher 接口负责为指定的 Key 添加 Watcher.
 type Watcher interface {
 	// Watch watches on a key or prefix. The watched events will be returned
 	// through the returned channel. If revisions waiting to be sent over the

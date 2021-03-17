@@ -175,6 +175,14 @@ func (db *DB) String() string {
 // Open creates and opens a database at the given path.
 // If the file does not exist then it will be created automatically.
 // Passing in nil options will cause Bolt to open the database with the default options.
+//
+// Open 创建 BoltDB 数据库.
+// 参数:
+// - path: 数据库文件路径, 如果数据库文件不存在则创建对应文件;
+// - mode: 操作数据库文件的权限;
+// - options: 可选参数, 可设置此数据库文件是否为只读模式、打开数据库文件的超时时间等参数.
+// 注意, Open() 方法会获取上述数据文件的文件锁, 所以打开一个已经被打开的 BoltDB 文件会导致进程被挂起,
+// 直到另一个进程关闭释放对应的数据库文件, 因此不能多进程同时打开同一数据库.
 func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 	db := &DB{
 		opened: true,
@@ -537,6 +545,10 @@ func (db *DB) close() error {
 //
 // IMPORTANT: You must close read-only transactions after you are finished or
 // else the database will not reclaim old pages.
+//
+// Begin 开启一个事务, writeable 参数表示开启的事务是否为读写事务.
+// db.View()、db.Update() 以及 db.Batch() 方法是对 Begin() 方法的封装, 实际上它们
+// 底层会调用 Begin() 方法启动事务, 然后执行一个函数, 最后安全地关闭事务（回滚或是提交）.
 func (db *DB) Begin(writable bool) (*Tx, error) {
 	if writable {
 		return db.beginRWTx()
@@ -674,6 +686,9 @@ func (db *DB) removeTx(tx *Tx) {
 // returned from the Update() method.
 //
 // Attempting to manually commit or rollback within the function will cause a panic.
+//
+// Update 启动一个读写事务. 在 fn 闭包中可在结束时返回 nil 来提交该读写事务, 也可通过返回 err 来回滚读写事务.
+// 注意, BoltDB 一次只允许一个读写事务, 如果同时启动两个读写事务, 则第二个读写事务会被阻塞, 直至前者关闭为止.
 func (db *DB) Update(fn func(*Tx) error) error {
 	t, err := db.Begin(true)
 	if err != nil {
@@ -705,6 +720,9 @@ func (db *DB) Update(fn func(*Tx) error) error {
 // Any error that is returned from the function is returned from the View() method.
 //
 // Attempting to manually rollback within the function will cause a panic.
+//
+// View 启动一个只读事务, 在 fn 闭包中可以得到一个数据库的一致视图, 注意, 在只读事务中
+// 不允许进行任何写操作, 只能进行查找操作或是复制数据库.
 func (db *DB) View(fn func(*Tx) error) error {
 	t, err := db.Begin(false)
 	if err != nil {
