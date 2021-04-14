@@ -25,6 +25,7 @@ import (
 // it will return timeout error.
 // If read/write timeout is set, transport will not be able to reuse connection.
 func NewTimeoutTransport(info TLSInfo, dialtimeoutd, rdtimeoutd, wtimeoutd time.Duration) (*http.Transport, error) {
+	// 创建 http.Transport 实例
 	tr, err := NewTransport(info, dialtimeoutd)
 	if err != nil {
 		return nil, err
@@ -39,6 +40,7 @@ func NewTimeoutTransport(info TLSInfo, dialtimeoutd, rdtimeoutd, wtimeoutd time.
 		tr.MaxIdleConnsPerHost = 1024
 	}
 
+	// 重新设置 http.Transport.Dial 函数的配置
 	tr.Dial = (&rwTimeoutDialer{
 		Dialer: net.Dialer{
 			Timeout:   dialtimeoutd,

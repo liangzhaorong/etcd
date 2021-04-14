@@ -279,12 +279,13 @@ func startPeer(t *Transport, urls types.URLs, peerID types.ID, fs *stats.Followe
 	return p
 }
 
+// send 向该 Peer 发送指定消息
 func (p *peer) send(m raftpb.Message) {
 	p.mu.Lock()
 	paused := p.paused
 	p.mu.Unlock()
 
-	// 检测 paused 字段, 是否暂停对指定节点发送消息
+	// 检测 paused 字段, 是否暂停对该 peer 节点发送消息
 	if paused {
 		return
 	}

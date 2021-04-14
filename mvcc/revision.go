@@ -25,13 +25,13 @@ const revBytesLen = 8 + 1 + 8
 // The set of changes that share same main revision changes the key-value space atomically.
 type revision struct {
 	// main is the main revision of a set of changes that happen atomically.
-	// 主版本号, 每个事务递增
+	// 一个全局递增的主版本号, 随 put/txn/delete 事务递增, 一个事务内的 key main 版本号是一致的
 	main int64
 
 	// sub is the sub revision of a change in a set of changes that happen
 	// atomically. Each change has different increasing sub revision in that
 	// set.
-	// 次版本号, 同一个事务中多个操作递增
+	// 一个事务内的子版本号, 从 0 开始随事务内 put/delete 操作递增
 	sub int64
 }
 

@@ -27,10 +27,11 @@ import (
 
 // authApplierV3 在 applierV3backend 的基础上扩展出了权限控制的功能.
 type authApplierV3 struct {
-	// 内嵌 applierV3
+	// 内嵌 applierV3, 实际指向 applierV3backend 实例
 	applierV3
-	// AuthStore 接口中定义与权限管理相关操作
+	// AuthStore 接口中定义与权限管理相关操作, 指向 auth.authStore 实例
 	as     auth.AuthStore
+	// 指向 lessor 实例
 	lessor lease.Lessor
 
 	// mu serializes Apply so that user isn't corrupted and so that
@@ -67,7 +68,7 @@ func (aa *authApplierV3) Apply(r *pb.InternalRaftRequest) *applyResult {
 			return &applyResult{err: err}
 		}
 	}
-	// 调用底层 applierV3 实现的 Apply() 方法完成请求分发
+	// 调用 applierV3backend.Apply() 方法完成请求的分发
 	ret := aa.applierV3.Apply(r)
 	// 清空 authApplierV3.authInfo
 	aa.authInfo.Username = ""
@@ -76,7 +77,7 @@ func (aa *authApplierV3) Apply(r *pb.InternalRaftRequest) *applyResult {
 }
 
 func (aa *authApplierV3) Put(txn mvcc.TxnWrite, r *pb.PutRequest) (*pb.PutResponse, *traceutil.Trace, error) {
-	// 检测 Put 权限
+	// 调用 authStore.IsPutPermitted() 方法检测当前用户是否具有 Put 权限
 	if err := aa.as.IsPutPermitted(&aa.authInfo, r.Key); err != nil {
 		return nil, nil, err
 	}

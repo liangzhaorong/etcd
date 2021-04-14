@@ -70,9 +70,12 @@ func init() {
 // to raft storage concurrently; the application must read
 // raftDone before assuming the raft messages are stable.
 type apply struct {
+	// 已提交、待应用的 Entry 记录
 	entries  []raftpb.Entry
+	// 待持久化的快照数据
 	snapshot raftpb.Snapshot
 	// notifyc synchronizes etcd server applies with the raft node
+	// 上层应用处理完 apply 中的数据后, 通过该通道通知底层 raft 模块
 	notifyc chan struct{}
 }
 
@@ -421,6 +424,7 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 
 func updateCommittedIndex(ap *apply, rh *raftReadyHandler) {
 	var ci uint64
+	// 获取已提交、待应用的 Entry 记录中最后一个 Entry 记录的索引值
 	if len(ap.entries) != 0 {
 		ci = ap.entries[len(ap.entries)-1].Index
 	}

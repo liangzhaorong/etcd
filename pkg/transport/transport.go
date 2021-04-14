@@ -24,11 +24,13 @@ import (
 type unixTransport struct{ *http.Transport }
 
 func NewTransport(info TLSInfo, dialtimeoutd time.Duration) (*http.Transport, error) {
+	// 根据 info 中 tls 的配置创建 tls.Config 实例
 	cfg, err := info.ClientConfig()
 	if err != nil {
 		return nil, err
 	}
 
+	// 创建底层用于向 peer 发送请求的 http.Transport 实例
 	t := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		Dial: (&net.Dialer{

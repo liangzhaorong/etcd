@@ -30,6 +30,7 @@ var (
 	plog = capnslog.NewPackageLogger("go.etcd.io/etcd", "etcdserver/api/v3rpc")
 )
 
+// kvServer 在 etcdserver.EtcdServer 的基础上进行的封装
 type kvServer struct {
 	// 用于填充响应消息的头信息
 	hdr header
@@ -65,10 +66,12 @@ func (s *kvServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeResp
 }
 
 func (s *kvServer) Put(ctx context.Context, r *pb.PutRequest) (*pb.PutResponse, error) {
+	// 检测请求数据是否有效
 	if err := checkPutRequest(r); err != nil {
 		return nil, err
 	}
 
+	// 调用 etcdserver.EtcdServer.Put() 方法
 	resp, err := s.kv.Put(ctx, r)
 	if err != nil {
 		return nil, togRPCError(err)
@@ -93,6 +96,7 @@ func (s *kvServer) DeleteRange(ctx context.Context, r *pb.DeleteRangeRequest) (*
 }
 
 func (s *kvServer) Txn(ctx context.Context, r *pb.TxnRequest) (*pb.TxnResponse, error) {
+	// 检测该 txn 请求是否有效
 	if err := checkTxnRequest(r, int(s.maxTxnOps)); err != nil {
 		return nil, err
 	}
@@ -104,6 +108,7 @@ func (s *kvServer) Txn(ctx context.Context, r *pb.TxnRequest) (*pb.TxnResponse, 
 		return nil, err
 	}
 
+	// 调用 EtcdServer.Txn() 方法
 	resp, err := s.kv.Txn(ctx, r)
 	if err != nil {
 		return nil, togRPCError(err)

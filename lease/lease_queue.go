@@ -22,7 +22,7 @@ import "container/heap"
 type LeaseWithTime struct {
 	id LeaseID
 	// Unix nanos timestamp.
-	time  int64
+	time  int64 // 该 LeaseID 对应的 Lease 过期时间戳
 	index int
 }
 
@@ -80,6 +80,7 @@ func (mq *LeaseExpiredNotifier) Init() {
 
 func (mq *LeaseExpiredNotifier) RegisterOrUpdate(item *LeaseWithTime) {
 	if old, ok := mq.m[item.id]; ok {
+		// 若已存在, 则更新过期时间戳
 		old.time = item.time
 		heap.Fix(&mq.queue, old.index)
 	} else {

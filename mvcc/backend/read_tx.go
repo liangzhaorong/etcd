@@ -40,6 +40,7 @@ type ReadTx interface {
 	UnsafeForEach(bucketName []byte, visitor func(k, v []byte) error) error
 }
 
+// readTx 结构体实现了只读事务 ReadTx 接口
 type readTx struct {
 	// mu protects accesses to the txReadBuffer
 	// 在读写 buf 中的缓存区数据时, 需要获取该锁进行同步
@@ -158,6 +159,10 @@ func (rt *readTx) reset() {
 }
 
 // TODO: create a base type for readTx and concurrentReadTx to avoid duplicated function implementation?
+//
+// concurrentReadTx 实现了并发读特性.
+// 并发读特性的核心原理是创建读事务对象时，它会全量拷贝当前写事务未提交的 buffer 数据，
+// 并发的读写事务不再阻塞在一个 buffer 资源锁上，实现了全并发读。
 type concurrentReadTx struct {
 	buf     txReadBuffer
 	txMu    *sync.RWMutex

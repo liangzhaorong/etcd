@@ -77,7 +77,7 @@ type keyIndex struct {
 	// 包含多个 revision 信息. 当客户端后续不断修改该 Key 时, generations[0] 中会不断追加 revision 信息.
 	// 当向 generation 实例追加一个 Tombstone 时, 表示删除当前 Key 值, 此时就会结束当前的 generation,
 	// 后续不再向该 generation 实例中追加 revision 信息, 同时会创建新的 generation 实例. 因此可认为 generation
-	// 对应了当前 Key 一次从创建到删除的声明周期.
+	// 对应了当前 Key 一次从创建到删除的生命周期.
 	generations []generation
 }
 

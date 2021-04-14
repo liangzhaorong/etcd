@@ -20,9 +20,13 @@ import (
 )
 
 type header struct {
+	// 当前集群 ID
 	clusterID int64
+	// 当前节点 ID
 	memberID  int64
+	// 指向 etcdserver.EtcdServer 实例
 	sg        etcdserver.RaftStatusGetter
+	// 获取当前节点最新的 revision
 	rev       func() int64
 }
 

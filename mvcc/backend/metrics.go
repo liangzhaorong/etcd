@@ -17,6 +17,7 @@ package backend
 import "github.com/prometheus/client_golang/prometheus"
 
 var (
+	// 表示后端 boltdb 事务提交的延时
 	commitSec = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Namespace: "etcd",
 		Subsystem: "disk",
@@ -28,6 +29,7 @@ var (
 		Buckets: prometheus.ExponentialBuckets(0.001, 2, 14),
 	})
 
+	// 表示事务提交过程中 B+ tree 的重平衡操作耗时分布区间
 	rebalanceSec = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Namespace: "etcd_debugging",
 		Subsystem: "disk",
@@ -39,6 +41,7 @@ var (
 		Buckets: prometheus.ExponentialBuckets(0.001, 2, 14),
 	})
 
+	// 表示事务提交过程中 B+ tree 的分裂操作耗时分布区间
 	spillSec = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Namespace: "etcd_debugging",
 		Subsystem: "disk",

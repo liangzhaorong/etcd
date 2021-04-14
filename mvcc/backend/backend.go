@@ -51,13 +51,16 @@ var (
 // Backend 接口的主要功能是将底层存储与上层进行解耦, 其中定义底层存储需要对上层提供的接口.
 type Backend interface {
 	// ReadTx returns a read transaction. It is replaced by ConcurrentReadTx in the main data path, see #10523.
+	//
 	// 创建一个只读事务, 这里的 ReadTx 接口是 v3 存储对只读事务的抽象.
 	ReadTx() ReadTx
 	// 创建一个批量事务, 这里的 BatchTx 接口是对批量读写事务的抽象.
 	BatchTx() BatchTx
 	// ConcurrentReadTx returns a non-blocking read transaction.
 	//
-	// 创建一个不阻塞的只读事务
+	// 创建一个不阻塞的并发读事务.
+	// 并发读特性的核心原理是创建读事务对象时, 它会全量拷贝当前写事务未提交的 buffer 数据,
+	// 并发的读写事务不再阻塞在一个 buffer 资源锁上, 实现了全并发读.
 	ConcurrentReadTx() ReadTx
 
 	// 创建快照
@@ -119,11 +122,12 @@ type backend struct {
 	// 底层的 BoltDB 存储
 	db *bolt.DB
 
-	// 两次批量读写事务提交的最大时间差.
+	// 两次批量读写事务提交的最大时间差. 默认值是 100ms.
 	batchInterval time.Duration
-	// 指定一次批量事务中最大的操作数, 当超过该阈值时, 当前的批量事务会自动提交.
+	// 指定一次批量事务中最大的操作数, 当超过该阈值时, 当前的批量事务会自动提交. 默认值是 10000.
 	batchLimit    int
 	// 批量读写事务, batchTxBuffered 是在 batchTx 的基础上添加了缓存功能, 两者都实现了 BatchTx 接口.
+	// 指向 batchTxBuffered 实例
 	batchTx       *batchTxBuffered
 
 	// 只读事务, readTx 实现了 ReadTx 接口.
@@ -138,7 +142,7 @@ type backend struct {
 type BackendConfig struct {
 	// Path is the file path to the backend file.
 	//
-	// BoltDB 数据库文件的路径.
+	// BoltDB 数据库文件的路径, {节点名}.etcd/member/snap/db
 	Path string
 	// BatchInterval is the maximum time before flushing the BatchTx.
 	//
@@ -170,6 +174,7 @@ func DefaultBackendConfig() BackendConfig {
 	}
 }
 
+// New 根据 BackendConfig 配置创建 Backend 实例
 func New(bcfg BackendConfig) Backend {
 	return newBackend(bcfg)
 }
@@ -182,7 +187,7 @@ func NewDefaultBackend(path string) Backend {
 }
 
 func newBackend(bcfg BackendConfig) *backend {
-	// 初始化 BoltDB 时的参数
+	// 创建 Options 实例, 该实例存储了用于初始化 BoltDB 时的参数
 	bopts := &bolt.Options{}
 	if boltOpenOptions != nil {
 		*bopts = *boltOpenOptions
@@ -227,7 +232,8 @@ func newBackend(bcfg BackendConfig) *backend {
 
 		lg: bcfg.Logger,
 	}
-	// 创建 batchTxBuffered 实例并初始化 backend.batchTx 字段
+	// 创建 batchTxBuffered 实例并初始化 backend.batchTx 字段,
+	// 注意, 该方法中同时为 b.readTx.tx 开启一个只读事务.
 	b.batchTx = newBatchTxBuffered(b)
 	// 启动一个单独的 goroutine, 其中会定时提交当前的批量读写事务, 并开启新的批量读写事务.
 	go b.run()
@@ -249,6 +255,8 @@ func (b *backend) ReadTx() ReadTx { return b.readTx }
 // ConcurrentReadTx creates and returns a new ReadTx, which:
 // A) creates and keeps a copy of backend.readTx.txReadBuffer,
 // B) references the boltdb read Tx (and its bucket cache) of current batch interval.
+//
+// ConcurrentReadTx 创建一个并发读事务
 func (b *backend) ConcurrentReadTx() ReadTx {
 	b.readTx.RLock()
 	defer b.readTx.RUnlock()
@@ -391,9 +399,11 @@ func (b *backend) run() {
 		select {
 		case <-t.C:
 		case <-b.stopc:
+			// 提交读写事务, 并不再创建新的读写事务
 			b.batchTx.CommitAndStop()
 			return
 		}
+		// 获取当前读写事务中执行的修改操作个数
 		if b.batchTx.safePending() != 0 {
 			// 提交当前的批量读写事务, 并开启一个新的批量读写事务
 			b.batchTx.Commit()

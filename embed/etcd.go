@@ -68,7 +68,11 @@ const (
 
 // Etcd contains a running etcd server and its listeners.
 type Etcd struct {
+	// 缓存当前节点用于接收集群中其他节点的连接请求的 peerListener 实例, 若在 --listen-peer-urls 参数中配置了
+	// 多个 url 地址, 则该切片中将会有多个 peerListener 实例.
 	Peers   []*peerListener
+	// 缓存当前节点用于接收客户端连接请求的 net.Listener 实例, 若在 --listen-client-urls 参数中配置了多个
+	// url 地址, 则这里就会有多个 net.Listener 实例.
 	Clients []net.Listener
 	// a map of contexts for the servers that serves client requests.
 	// 该 map 用来记录 Client URL 与对应 serveCtx 实例的对应关系
@@ -77,7 +81,9 @@ type Etcd struct {
 
 	Server *etcdserver.EtcdServer
 
+	// 启动该 Etcd 实例的各项配置
 	cfg   Config
+	// 用于监听当前 Etcd 实例是否已关闭
 	stopc chan struct{}
 	errc  chan error
 
@@ -88,8 +94,11 @@ type Etcd struct {
 // 创建一个 peerListener 实例, 其中封装了调用 NewPeerHander() 函数注册的 Handler, 以及启动和关闭 HTTP 服
 // 务的回调函数.
 type peerListener struct {
+	// 内嵌 net.Listener
 	net.Listener
+	// 当前 peerListener 实例开始启动并对外提供服务时的回调函数
 	serve func() error
+	// 当前 peerListener 实例关闭时的回调函数
 	close func(context.Context) error
 }
 
@@ -126,7 +135,7 @@ func StartEtcd(inCfg *Config) (e *Etcd, err error) {
 			zap.Strings("listen-peer-urls", e.cfg.getLPURLs()),
 		)
 	}
-	// 初始化 Etcd.Peers 字段, 其中为每个 Peer URL 创建相应的 Listener 实例
+	// 初始化 Etcd.Peers 字段, 其中为每个 Peer URL 创建相应的 peerListener 实例
 	if e.Peers, err = configurePeerListeners(cfg); err != nil {
 		return e, err
 	}
@@ -153,6 +162,7 @@ func StartEtcd(inCfg *Config) (e *Etcd, err error) {
 	)
 	// 初始化集群中其他节点地址和自身的 token
 	memberInitialized := true
+	// 若为首次启动
 	if !isMemberInitialized(cfg) {
 		memberInitialized = false
 		urlsmap, token, err = cfg.PeerURLsMapAndToken("etcd")
@@ -466,6 +476,8 @@ func stopServers(ctx context.Context, ss *servers) {
 
 func (e *Etcd) Err() <-chan error { return e.errc }
 
+// configurePeerListeners 为 cfg.LPUrls 中配置的每一个 peer url 都创建一个 peerListener 实例,
+// 并添加到 peers 切片中返回.
 func configurePeerListeners(cfg *Config) (peers []*peerListener, err error) {
 	if err = updateCipherSuites(&cfg.PeerTLSInfo, cfg.CipherSuites); err != nil {
 		return nil, err
@@ -513,6 +525,7 @@ func configurePeerListeners(cfg *Config) (peers []*peerListener, err error) {
 		}
 	}()
 
+	// 为每个 peer url 都创建一个 peerListener 实例, 并添加到 peers 切片中
 	for i, u := range cfg.LPUrls {
 		if u.Scheme == "http" {
 			if !cfg.PeerTLSInfo.Empty() {
@@ -530,13 +543,17 @@ func configurePeerListeners(cfg *Config) (peers []*peerListener, err error) {
 				}
 			}
 		}
+		// 创建 peerListener 实例
 		peers[i] = &peerListener{close: func(context.Context) error { return nil }}
+		// 创建并返回 rwTimeoutListener 实例, 该实例是在 net.Listener 实例的基础扩展了读写超时
 		peers[i].Listener, err = rafthttp.NewListener(u, &cfg.PeerTLSInfo)
 		if err != nil {
 			return nil, err
 		}
 		// once serve, overwrite with 'http.Server.Shutdown'
+		// 当前 peerListener 实例关闭时的回调函数
 		peers[i].close = func(context.Context) error {
+			// 调用底层的 net.Listener.Close() 方法关闭该 Listener
 			return peers[i].Listener.Close()
 		}
 	}
@@ -672,7 +689,7 @@ func configureClientListeners(cfg *Config) (sctxs map[string]*serveCtx, err erro
 			continue
 		}
 
-		// 创建 Listener 实例
+		// 创建 net.Listener 实例
 		if sctx.l, err = net.Listen(network, addr); err != nil {
 			return nil, err
 		}
@@ -680,6 +697,8 @@ func configureClientListeners(cfg *Config) (sctxs map[string]*serveCtx, err erro
 		// hosts that disable ipv6. So, use the address given by the user.
 		sctx.addr = addr
 
+		// 根据当前系统配置的文件描述符限制, 重新封装 net.Listener 实例, 在 net.Listener 的基础上,
+		// 扩展限制客户端并发连接的最大数量.
 		if fdLimit, fderr := runtimeutil.FDLimit(); fderr == nil {
 			if fdLimit <= reservedInternalFDNum {
 				if cfg.logger != nil {
@@ -692,10 +711,11 @@ func configureClientListeners(cfg *Config) (sctxs map[string]*serveCtx, err erro
 					plog.Fatalf("file descriptor limit[%d] of etcd process is too low, and should be set higher than %d to ensure internal usage", fdLimit, reservedInternalFDNum)
 				}
 			}
+			// 创建 limitListener 实例
 			sctx.l = transport.LimitListener(sctx.l, int(fdLimit-reservedInternalFDNum))
 		}
 
-		// 根据不同的系统和协议, 对 sctx.l 中记录的  Listener 进行调整
+		// 若使用的是 tcp 协议, 则在 limitListener 实例的基础上再封装成 keepaliveListener 实例
 		if network == "tcp" {
 			if sctx.l, err = transport.NewKeepAliveListener(sctx.l, network, nil); err != nil {
 				return nil, err

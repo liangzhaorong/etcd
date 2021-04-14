@@ -39,13 +39,16 @@ import (
 )
 
 var (
+	// 该 key 用于存储当前 etcd 集群是否开启了鉴权功能, 对应值为 1 表示开启鉴权
 	enableFlagKey = []byte("authEnabled")
 	authEnabled   = []byte{1}
 	authDisabled  = []byte{0}
 
+	// 保存当前最新的 main revision 值
 	revisionKey = []byte("authRevision")
 
 	authBucketName      = []byte("auth")
+	// 保存用户数据, 以用户名为 key, authpb.User 为 value
 	authUsersBucketName = []byte("authUsers")
 	authRolesBucketName = []byte("authRoles")
 
@@ -210,26 +213,35 @@ type TokenProvider interface {
 
 type authStore struct {
 	// atomic operations; need 64-bit align, or 32-bit tests will crash
+	//
+	// 保存当前最新的鉴权版本号
 	revision uint64
 
 	lg        *zap.Logger
+	// 指向 backend 实例
 	be        backend.Backend
+	// 是否启用了鉴权机制
 	enabled   bool
 	enabledMu sync.RWMutex
 
 	rangePermCache map[string]*unifiedRangePermissions // username -> unifiedRangePermissions
 
+	// 有两种 token provider 的实现, tokenSimple 和 tokenJWT
 	tokenProvider       TokenProvider
 	syncConsistentIndex saveConsistentIndexFunc
+	// 可自定义的 hash 值计算迭代次数 cost
 	bcryptCost          int // the algorithm cost / strength for hashing auth passwords
 }
 
 func (as *authStore) SetConsistentIndexSyncer(syncer saveConsistentIndexFunc) {
 	as.syncConsistentIndex = syncer
 }
+// AuthEnable 启用鉴权
 func (as *authStore) AuthEnable() error {
+	// 对 authStore.enabled 字段进行操作需要加互斥锁
 	as.enabledMu.Lock()
 	defer as.enabledMu.Unlock()
+	// 若已经开启鉴权了, 则直接返回
 	if as.enabled {
 		if as.lg != nil {
 			as.lg.Info("authentication is already enabled; ignored auth enable request")
@@ -238,30 +250,39 @@ func (as *authStore) AuthEnable() error {
 		}
 		return nil
 	}
+	// 获取 backend 实例
 	b := as.be
+	// 获取 backend.batchTx 实例
 	tx := b.BatchTx()
 	tx.Lock()
+	// 该方法结束后需要执行一次事务提交操作
 	defer func() {
 		tx.Unlock()
 		b.ForceCommit()
 	}()
 
+	// 获取 root 用户
 	u := getUser(as.lg, tx, rootUser)
+	// root 用户必须存在才能开启鉴权功能
 	if u == nil {
 		return ErrRootUserNotExist
 	}
 
+	// 若该 root 用户没有 root 权限, 则返回错误
 	if !hasRootRole(u) {
 		return ErrRootRoleNotExist
 	}
 
+	// 设置 authEnabled 的值为 1 表示开启鉴权
 	tx.UnsafePut(authBucketName, enableFlagKey, authEnabled)
 
 	as.enabled = true
+	// 根据使用的 token provider 类型, 调用对应的 enable() 方法
 	as.tokenProvider.enable()
 
 	as.rangePermCache = make(map[string]*unifiedRangePermissions)
 
+	// 设置 authStore.revision 字段值
 	as.setRevision(getRevision(tx))
 
 	if as.lg != nil {
@@ -307,7 +328,9 @@ func (as *authStore) Close() error {
 	return nil
 }
 
+// Authenticate 当启用了鉴权功能时, 会调用该方法验证请求用户的身份合法性
 func (as *authStore) Authenticate(ctx context.Context, username, password string) (*pb.AuthenticateResponse, error) {
+	// 检测是否启用了鉴权功能
 	if !as.IsAuthEnabled() {
 		return nil, ErrAuthNotEnabled
 	}
@@ -317,6 +340,7 @@ func (as *authStore) Authenticate(ctx context.Context, username, password string
 	defer tx.Unlock()
 
 	user := getUser(as.lg, tx, username)
+	// 用户不存在, 鉴权失败
 	if user == nil {
 		return nil, ErrAuthFailed
 	}
@@ -328,6 +352,7 @@ func (as *authStore) Authenticate(ctx context.Context, username, password string
 	// Password checking is already performed in the API layer, so we don't need to check for now.
 	// Staleness of password can be detected with OCC in the API layer, too.
 
+	// 为指定用户创建一个新的 token
 	token, err := as.tokenProvider.assign(ctx, username, as.Revision())
 	if err != nil {
 		return nil, err
@@ -405,7 +430,9 @@ func (as *authStore) Recover(be backend.Backend) {
 	as.enabledMu.Unlock()
 }
 
+// UserAdd 添加用户
 func (as *authStore) UserAdd(r *pb.AuthUserAddRequest) (*pb.AuthUserAddResponse, error) {
+	// 用户名不许为空
 	if len(r.Name) == 0 {
 		return nil, ErrUserEmpty
 	}
@@ -414,7 +441,9 @@ func (as *authStore) UserAdd(r *pb.AuthUserAddRequest) (*pb.AuthUserAddResponse,
 	var err error
 
 	noPassword := r.Options != nil && r.Options.NoPassword
+	// 指定了用户密码
 	if !noPassword {
+		// 根据用户密码生成加密后的 hash 值
 		hashed, err = bcrypt.GenerateFromPassword([]byte(r.Password), as.bcryptCost)
 		if err != nil {
 			if as.lg != nil {
@@ -430,10 +459,12 @@ func (as *authStore) UserAdd(r *pb.AuthUserAddRequest) (*pb.AuthUserAddResponse,
 		}
 	}
 
+	// 调用 backend.BatchTx() 方法返回 backend 中的读写事务 batchTx 实例
 	tx := as.be.BatchTx()
 	tx.Lock()
 	defer tx.Unlock()
 
+	// 检测该用户名是否已存在
 	user := getUser(as.lg, tx, r.Name)
 	if user != nil {
 		return nil, ErrUserAlreadyExist
@@ -446,14 +477,17 @@ func (as *authStore) UserAdd(r *pb.AuthUserAddRequest) (*pb.AuthUserAddResponse,
 		}
 	}
 
+	// 创建 authpb.User 实例
 	newUser := &authpb.User{
 		Name:     []byte(r.Name),
 		Password: hashed,
 		Options:  options,
 	}
 
+	// 将该用户保存到 BoltDB 的 authUsers Bucket 中
 	putUser(as.lg, tx, newUser)
 
+	// 递增 authStore.revision 字段的值并更新到 BoltDB 中
 	as.commitRevision(tx)
 	as.saveConsistentIndex(tx)
 
@@ -462,6 +496,7 @@ func (as *authStore) UserAdd(r *pb.AuthUserAddRequest) (*pb.AuthUserAddResponse,
 	} else {
 		plog.Noticef("added a new user: %s", r.Name)
 	}
+	// 返回用户添加成功的响应
 	return &pb.AuthUserAddResponse{}, nil
 }
 
@@ -928,8 +963,11 @@ func (as *authStore) RoleGrantPermission(r *pb.AuthRoleGrantPermissionRequest) (
 	return &pb.AuthRoleGrantPermissionResponse{}, nil
 }
 
+// isOpPermitted 检测指定用户 userName 是否运行执行 permTyp（READ、WRITE、READWRITE） 操作
 func (as *authStore) isOpPermitted(userName string, revision uint64, key, rangeEnd []byte, permTyp authpb.Permission_Type) error {
 	// TODO(mitake): this function would be costly so we need a caching mechanism
+	//
+	// 检测是否启用了鉴权功能, 没有启动则直接返回
 	if !as.IsAuthEnabled() {
 		return nil
 	}
@@ -938,7 +976,9 @@ func (as *authStore) isOpPermitted(userName string, revision uint64, key, rangeE
 	if revision == 0 {
 		return ErrUserEmpty
 	}
+	// 获取当前最新的鉴权版本号
 	rev := as.Revision()
+	// 若 Raft 日志条目中的请求鉴权版本号小于当前鉴权版本号, 则拒绝写入, 并返回 ErrAuthOldRevision 错误
 	if revision < rev {
 		if as.lg != nil {
 			as.lg.Warn("request auth revision is less than current node auth revision",
@@ -982,6 +1022,7 @@ func (as *authStore) isOpPermitted(userName string, revision uint64, key, rangeE
 	return ErrPermissionDenied
 }
 
+// IsPutPermitted 检测当前请求用户是否具有 Put 权限
 func (as *authStore) IsPutPermitted(authInfo *AuthInfo, key []byte) error {
 	return as.isOpPermitted(authInfo.Username, authInfo.Revision, key, nil, authpb.WRITE)
 }
@@ -1018,8 +1059,11 @@ func (as *authStore) IsAdminPermitted(authInfo *AuthInfo) error {
 	return nil
 }
 
+// getUser 从 BoltDB 的 authUsers Bucket 中获取指定用户名的 authpb.User 实例
 func getUser(lg *zap.Logger, tx backend.BatchTx, username string) *authpb.User {
+	// 检索 BoltDB 的 authUsers Bucket, 查询指定的用户名是否存在
 	_, vs := tx.UnsafeRange(authUsersBucketName, []byte(username), nil, 0)
+	// 不存在, 直接返回
 	if len(vs) == 0 {
 		return nil
 	}
@@ -1062,6 +1106,7 @@ func getAllUsers(lg *zap.Logger, tx backend.BatchTx) []*authpb.User {
 	return users
 }
 
+// putUser 将 authpb.User 实例序列化, 并保存到 authUsers Bucket 中
 func putUser(lg *zap.Logger, tx backend.BatchTx, user *authpb.User) {
 	b, err := user.Marshal()
 	if err != nil {
@@ -1071,6 +1116,7 @@ func putUser(lg *zap.Logger, tx backend.BatchTx, user *authpb.User) {
 			plog.Panicf("failed to marshal user struct (name: %s): %s", user.Name, err)
 		}
 	}
+	// 调用 batchTxBuffered.UnsafePut() 方法执行事务写入操作, 将用户数据保存到 authUsers 该 Bucket 中
 	tx.UnsafePut(authUsersBucketName, user.Name, b)
 }
 
@@ -1159,6 +1205,7 @@ func NewAuthStore(lg *zap.Logger, be backend.Backend, tp TokenProvider, bcryptCo
 		bcryptCost = bcrypt.DefaultCost
 	}
 
+	// 获取 backend.batchTx 实例
 	tx := be.BatchTx()
 	tx.Lock()
 
@@ -1167,6 +1214,7 @@ func NewAuthStore(lg *zap.Logger, be backend.Backend, tp TokenProvider, bcryptCo
 	tx.UnsafeCreateBucket(authRolesBucketName)
 
 	enabled := false
+	// 检测是否启用了鉴权
 	_, vs := tx.UnsafeRange(authBucketName, enableFlagKey, nil, 0)
 	if len(vs) == 1 {
 		if bytes.Equal(vs[0], authEnabled) {
@@ -1200,6 +1248,7 @@ func NewAuthStore(lg *zap.Logger, be backend.Backend, tp TokenProvider, bcryptCo
 	return as
 }
 
+// hasRootRole 检测指定用户是否具有 root 权限
 func hasRootRole(u *authpb.User) bool {
 	// u.Roles is sorted in UserGrantRole(), so we can use binary search.
 	idx := sort.SearchStrings(u.Roles, rootRole)
@@ -1207,14 +1256,19 @@ func hasRootRole(u *authpb.User) bool {
 }
 
 func (as *authStore) commitRevision(tx backend.BatchTx) {
+	// 递增 revision 的值
 	atomic.AddUint64(&as.revision, 1)
 	revBytes := make([]byte, revBytesLen)
 	binary.BigEndian.PutUint64(revBytes, as.Revision())
+	// 将递增后的 revision 值保存到 "auth" 该 Bucket 中
 	tx.UnsafePut(authBucketName, revisionKey, revBytes)
 }
 
+// getRevision 获取 BoltDB 中保存的 authRevision 值
 func getRevision(tx backend.BatchTx) uint64 {
+	// 调用 batchTx.UnsafeRange() 方法从 "auth" 该 Bucket 中获取 key 为 "authRevision" 对应的 value
 	_, vs := tx.UnsafeRange(authBucketName, revisionKey, nil, 0)
+	// 不存在, 则返回 0
 	if len(vs) != 1 {
 		// this can happen in the initialization phase
 		return 0
@@ -1226,6 +1280,7 @@ func (as *authStore) setRevision(rev uint64) {
 	atomic.StoreUint64(&as.revision, rev)
 }
 
+// Revision 获取当前最新的鉴权版本号
 func (as *authStore) Revision() uint64 {
 	return atomic.LoadUint64(&as.revision)
 }

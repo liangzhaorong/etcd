@@ -89,6 +89,7 @@ func NewBackendQuota(s *EtcdServer, name string) Quota {
 	lg := s.getLogger()
 	quotaBackendBytes.Set(float64(s.Cfg.QuotaBackendBytes))
 
+	// 若小于 0, 则表示对 db 的数据量上限没有限制
 	if s.Cfg.QuotaBackendBytes < 0 {
 		// disable quotas if negative
 		quotaLogOnce.Do(func() {
@@ -159,7 +160,7 @@ func (b *backendQuota) Available(v interface{}) bool {
 	return b.s.Backend().Size()+int64(b.Cost(v)) < b.maxBackendBytes
 }
 
-// Cost 根据请求的类型计算请求的数据量.
+// Cost 根据请求的类型计算此次请求的数据量大小.
 func (b *backendQuota) Cost(v interface{}) int {
 	switch r := v.(type) {
 	case *pb.PutRequest:
@@ -177,6 +178,7 @@ func (b *backendQuota) Cost(v interface{}) int {
 func costPut(r *pb.PutRequest) int { return kvOverhead + len(r.Key) + len(r.Value) }
 
 func costTxnReq(u *pb.RequestOp) int {
+	// 若非 Put 请求, 则返回 0
 	r := u.GetRequestPut()
 	if r == nil {
 		return 0
@@ -200,6 +202,7 @@ func costTxn(r *pb.TxnRequest) int {
 	return sizeSuccess
 }
 
+// Remaining 计算 db 中可用的空闲空间大小
 func (b *backendQuota) Remaining() int64 {
 	return b.maxBackendBytes - b.s.Backend().Size()
 }

@@ -34,6 +34,7 @@ var (
 type RaftAttributes struct {
 	// PeerURLs is the list of peers in the raft cluster.
 	// TODO(philips): ensure these are URLs
+	// 当前节点对外提供与集群中其他节点进行交互的 url 地址
 	PeerURLs []string `json:"peerURLs"`
 	// IsLearner indicates if the member is raft learner.
 	IsLearner bool `json:"isLearner,omitempty"`
@@ -41,11 +42,13 @@ type RaftAttributes struct {
 
 // Attributes represents all the non-raft related attributes of an etcd member.
 type Attributes struct {
+	// 当前节点名称, 单节点默认为 default, 可通过 --name 参数配置
 	Name       string   `json:"name,omitempty"`
 	ClientURLs []string `json:"clientURLs,omitempty"`
 }
 
 type Member struct {
+	// 当前节点的 ID, 唯一
 	ID types.ID `json:"id"`
 	RaftAttributes
 	Attributes
@@ -64,6 +67,7 @@ func NewMemberAsLearner(name string, peerURLs types.URLs, clusterName string, no
 }
 
 func newMember(name string, peerURLs types.URLs, clusterName string, now *time.Time, isLearner bool) *Member {
+	// 创建 Member 实例
 	m := &Member{
 		RaftAttributes: RaftAttributes{
 			PeerURLs:  peerURLs.StringSlice(),
@@ -83,6 +87,7 @@ func newMember(name string, peerURLs types.URLs, clusterName string, now *time.T
 		b = append(b, []byte(fmt.Sprintf("%d", now.Unix()))...)
 	}
 
+	// 以 peer url 地址列表和集群名称已经当前创建 Member 实例的时间生成当前节点的 ID
 	hash := sha1.Sum(b)
 	m.ID = types.ID(binary.BigEndian.Uint64(hash[:8]))
 	return m

@@ -107,7 +107,7 @@ func (s *EtcdServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeRe
 		trace.LogIfLong(traceThreshold)
 	}(time.Now())
 
-	// 判断此次请求是否为 linearizable read
+	// 判断此次请求是否为 linearizable read（线性读）
 	if !r.Serializable {
 		// 对于 linearizable read 请求来说, 会在这里阻塞等待.
 		err = s.linearizableReadNotify(ctx)
@@ -263,8 +263,11 @@ func (s *EtcdServer) Compact(ctx context.Context, r *pb.CompactionRequest) (*pb.
 	return resp, nil
 }
 
+// LeaseGrant 创建一个指定 TTL 秒数的 Lease
 func (s *EtcdServer) LeaseGrant(ctx context.Context, r *pb.LeaseGrantRequest) (*pb.LeaseGrantResponse, error) {
 	// no id given? choose one
+	//
+	// 如果客户端没有指定将要创建的 Lease 的 ID, 则自动生成一个
 	for r.ID == int64(lease.NoLease) {
 		// only use positive int64 id's
 		r.ID = int64(s.reqIDGen.Next() & ((1 << 63) - 1))
@@ -476,6 +479,7 @@ func (s *EtcdServer) Authenticate(ctx context.Context, r *pb.AuthenticateRequest
 	return resp.(*pb.AuthenticateResponse), nil
 }
 
+// UserAdd 添加用户
 func (s *EtcdServer) UserAdd(ctx context.Context, r *pb.AuthUserAddRequest) (*pb.AuthUserAddResponse, error) {
 	resp, err := s.raftRequest(ctx, pb.InternalRaftRequest{AuthUserAdd: r})
 	if err != nil {
@@ -635,9 +639,12 @@ func (s *EtcdServer) doSerialize(ctx context.Context, chk func(*auth.AuthInfo) e
 }
 
 func (s *EtcdServer) processInternalRaftRequestOnce(ctx context.Context, r pb.InternalRaftRequest) (*applyResult, error) {
-	// 检测当前是否有大量已提交但未应用的 Entry 记录, 如果有, 则返回错误以实现限流
-	ai := s.getAppliedIndex()   // 获取当前节点已应用的 Entry 记录的最大索引值
-	ci := s.getCommittedIndex() // 获取当前节点已提交的 Entry 记录的最大索引值
+	// 获取当前节点已应用的 Entry 记录的最大索引值
+	ai := s.getAppliedIndex()
+	// 获取当前节点已提交的 Entry 记录的最大索引值
+	ci := s.getCommittedIndex()
+	// Preflight Check 检查, 如果 Raft 模块已提交的日志索引（committed index）比已应用的状态机的
+	// 日志索引（applied index）超过了 5000, 那么它就会返回一个 "etcdserver: too many requests" 错误给 client.
 	if ci > ai+maxGapBetweenApplyAndCommitIndex {
 		return nil, ErrTooManyRequests
 	}
@@ -647,7 +654,7 @@ func (s *EtcdServer) processInternalRaftRequestOnce(ctx context.Context, r pb.In
 		ID: s.reqIDGen.Next(),
 	}
 
-	// 获取权限信息, 记录到请求头中
+	// 获取请求中的鉴权信息, 记录到请求头中
 	authInfo, err := s.AuthInfoFromCtx(ctx)
 	if err != nil {
 		return nil, err
@@ -663,23 +670,24 @@ func (s *EtcdServer) processInternalRaftRequestOnce(ctx context.Context, r pb.In
 		return nil, err
 	}
 
-	// 检测序列化后的长度
+	// 检测序列化后的长度, 默认大小不可以超过 1.5M
 	if len(data) > int(s.Cfg.MaxRequestBytes) {
 		return nil, ErrRequestTooLarge
 	}
 
+	// 获取当前请求的 ID
 	id := r.ID
 	if id == 0 {
 		id = r.Header.ID
 	}
-	// 在 EtcdServer.wait 中为该请求注册相应的 ch 通道
+	// 在 EtcdServer.wait 中为该请求注册相应的 ch 通道, 后续可通过该通道获取 Raft 执行结果
 	ch := s.w.Register(id)
 
 	cctx, cancel := context.WithTimeout(ctx, s.Cfg.ReqTimeout())
 	defer cancel()
 
 	start := time.Now()
-	// 将 InternalRaftRequest 序列化后的数据封装为 Entry, 之后生成 MsgProp 消息并发送出去.
+	// 调用 node.Propose() 函数将 InternalRaftRequest 序列化后的数据封装为 Entry, 之后生成 MsgProp 消息并发送出去.
 	err = s.r.Propose(cctx, data)
 	if err != nil {
 		proposalsFailed.Inc()
@@ -736,7 +744,7 @@ func (s *EtcdServer) linearizableReadLoop() {
 
 		lg := s.getLogger()
 		cctx, cancel := context.WithTimeout(context.Background(), s.Cfg.ReqTimeout())
-		// 创建并处理 MsgReadIndex 请求
+		// 创建并处理 MsgReadIndex 请求. 实际调用 node.ReadIndex() 函数
 		if err := s.r.ReadIndex(cctx, ctxToSend); err != nil {
 			cancel()
 			if err == raft.ErrStopped {
@@ -822,9 +830,11 @@ func (s *EtcdServer) linearizableReadLoop() {
 	}
 }
 
+// linearizableReadNotify 执行线性读, 会在该函数中阻塞, 直到获取到当前集群最新的已提交的日志索引（committed index）
 func (s *EtcdServer) linearizableReadNotify(ctx context.Context) error {
 	s.readMu.RLock()
-	nc := s.readNotifier // 获取 EtcdServer.readNotifier 实例
+	// 获取 EtcdServer.readNotifier 实例
+	nc := s.readNotifier
 	s.readMu.RUnlock()
 
 	// signal linearizable loop for current notify if it hasn't been already

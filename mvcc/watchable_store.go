@@ -46,7 +46,7 @@ type watchable interface {
 // watchableStore 结构体完成了注册 watcher 实例、管理 watcher 实例, 以及发送触发 watcher 之后的响应等核心功能.
 // 该结构体实现了 Watchable 接口.
 type watchableStore struct {
-	// 内嵌 store 结构体
+	// 内嵌 store 结构体, 指向 mvcc.store 实例
 	*store
 
 	// mu protects watcher groups and batches. It should never be locked
@@ -65,6 +65,9 @@ type watchableStore struct {
 	victimc chan struct{}
 
 	// contains all unsynced watchers that needs to sync with events that have happened
+	//
+	// 用于存储所有 unsynced watcher, unsynced watcher 表示此类 watcher 监听的数据还未同步完成, 落后于当前最新数据变更,
+	// 正在努力追赶.
 	unsynced watcherGroup
 
 	// contains all synced watchers that are in sync with the progress of the store.
@@ -74,7 +77,7 @@ type watchableStore struct {
 	// 都落后于当前最新更新操作, 并且有一个单独的后台 goroutine 帮助其进行追赶.
 	//
 	// 当 etcd 服务端收到客户端的 watch 请求时, 如果请求携带了 revision 参数, 则比较该请求的 revision 信息和 store.currentRev
-	// 信息: 如果请求的 revision 信息较大, 则放入 synced watcherGroup 中, 否则放入 unsynced watcherGroup.
+	// 信息: 如果请求的 revision 较大, 则放入 synced watcherGroup 中, 否则放入 unsynced watcherGroup.
 	//
 	// watchableStore 实例会启动一个后台的 goroutine 持续同步 unsynced watcherGroup, 然后将完成同步的 watcher 实例迁移到
 	// synced watcherGroup 中存储.
@@ -94,6 +97,7 @@ func New(lg *zap.Logger, b backend.Backend, le lease.Lessor, as auth.AuthStore, 
 	return newWatchableStore(lg, b, le, as, ig, cfg)
 }
 
+// newWatchableStore 创建 watchableStore 实例
 func newWatchableStore(lg *zap.Logger, b backend.Backend, le lease.Lessor, as auth.AuthStore, ig ConsistentIndexGetter, cfg StoreConfig) *watchableStore {
 	s := &watchableStore{
 		store:    NewStore(lg, b, le, ig, cfg), // 创建 store 实例
@@ -151,6 +155,8 @@ func (s *watchableStore) watch(key, end []byte, startRev int64, id WatchID, ch c
 	s.mu.Lock()     // 加 mu 锁
 	s.revMu.RLock() // 因为要读取 currentRev 字段, 所以还需要加 revMu 锁
 	// 比较 startRev 与 store.currentRev, 决定待添加的 watcher 实例是否已经同步完成
+	// 如果创建的 watcher 未指定版本号（默认 0）、或指定的版本号大于 etcd server 当前最新的版本号（currentRev）,
+	// 那么该新创建的 watcher 将会被保存到 synced watcherGroup 中.
 	synced := startRev > s.store.currentRev || startRev == 0
 	if synced {
 		// 设置待添加 watcher 的 minRev 字段值
@@ -248,7 +254,8 @@ func (s *watchableStore) Restore(b backend.Backend) error {
 
 // syncWatchersLoop syncs the watcher in the unsynced map every 100ms.
 //
-// watchableStore 每隔 100ms 对 unsynced watcherGroup 进行一次批量的同步.
+// syncWatchersLoop 负责 unsynced watcherGroup 中的 watcher 历史事件推送,
+// 每隔 100ms 对 unsynced watcherGroup 进行一次批量的同步.
 func (s *watchableStore) syncWatchersLoop() {
 	defer s.wg.Done() // 该后台 goroutine 结束时调用
 
@@ -286,7 +293,8 @@ func (s *watchableStore) syncWatchersLoop() {
 // syncVictimsLoop tries to write precomputed watcher responses to
 // watchers that had a blocked watcher channel
 //
-// syncVictimsLoop 在一个单独的 goroutine 中运行, 该方法会定期处理 watchableStore.victims 中缓存的 watcherBatch 实例.
+// syncVictimsLoop 在一个单独的 goroutine 中运行, 该方法负责 slower watcher 的堆积的事件推送.
+// 它会定期处理 watchableStore.victims 中缓存的 watcherBatch 实例.
 func (s *watchableStore) syncVictimsLoop() {
 	defer s.wg.Done()
 
@@ -325,7 +333,8 @@ func (s *watchableStore) moveVictims() (moved int) {
 	s.mu.Unlock()
 
 	var newVictim watcherBatch
-	// 遍历 victims 中记录的 watcherBatch 实例
+	// 遍历 victims 中记录的 watcherBatch 数据结构, 尝试将堆积的事件再次推送到 watcher 的
+	// 接收 channel 中. 若推送失败, 则再次加入到 victim watcherBatch 数据结构中等待下次重试.
 	for _, wb := range victims {
 		// try to send responses again
 		// 从 watcherBatch 实例中获取 eventBatch 实例
@@ -352,7 +361,7 @@ func (s *watchableStore) moveVictims() (moved int) {
 		s.mu.Lock()
 		s.store.revMu.RLock()
 		curRev := s.store.currentRev
-		// 遍历 watcherBatch
+		// 再次遍历 watcherBatch
 		for w, eb := range wb {
 			// 如果 eventBatch 实例被记录到 newVictim 中, 则表示 watcher.ch 通道依然阻塞,
 			// watchResponse 发送失败.
@@ -552,6 +561,11 @@ func kvsToEvents(lg *zap.Logger, wg *watcherGroup, revs, vals [][]byte) (evs []m
 
 // notify notifies the fact that given event at the given rev just happened to
 // watchers that watch on the key of the event.
+//
+// notify 会匹配出监听过此 key 并处于 synced watcherGroup 中的 watcher, 同时事件中的版本号要大于等于
+// watcher 监听的最小版本号, 才能将事件发送到此 watcher 的事件 channel 中.
+//
+// 注意: notify 方法是在修改事务结束时同步调用的, 必须是轻量级、高性能、无阻塞的, 否则会严重影响集群写性能.
 func (s *watchableStore) notify(rev int64, evs []mvccpb.Event) {
 	var victim watcherBatch
 	// 将传入的 Event 实例转换成 watcherBatch（即 map[*watcher]*eventBatch 类型）, 之后进行遍历, 逐个 watcher 进行处理
@@ -566,7 +580,12 @@ func (s *watchableStore) notify(rev int64, evs []mvccpb.Event) {
 				plog.Panicf("unexpected multiple revisions in notification")
 			}
 		}
-		// 将当前 watcher 对应的 Event 实例封装成 watchResponse 实例, 并尝试写入 watcher.ch 通道中
+		// 将当前 watcher 对应的 Event 实例封装成 watchResponse 实例, 并尝试写入 watcher.ch 通道中.
+		//
+		// 注意, 接收 watch 事件 channel 的 buffer 容量默认 1024. 若 client 与 server 端因网络抖动、
+		// 高负载等原因导致推送缓慢, buffer 满了, etcd 为了保证 Watch 事件的高可靠性, 并不会丢弃它,
+		// 而是将此 watcher 从 synced watcherGroup 中删除, 然后将此 watcher 和事件列表保存到一个名为
+		// 受害者 victim 的 watcherBatch 结构中, 通过异步机制重试保证事件的可靠性.
 		if w.send(WatchResponse{WatchID: w.id, Events: eb.evs, Revision: rev}) {
 			pendingEventsGauge.Add(float64(len(eb.evs)))
 		} else { // 如果 watcher.ch 通道阻塞, 则将这些 Event 实例记录到 watchableStore.victims 字段中
@@ -576,8 +595,10 @@ func (s *watchableStore) notify(rev int64, evs []mvccpb.Event) {
 				victim = make(watcherBatch)
 			}
 			w.victim = true
+			// 将 eventBatch 实例保存以 watcher 作为 key 保存到 victim 中
 			victim[w] = eb
-			s.synced.delete(w) // 将该 watcher 从 synced watcherGroup 中删除
+			// 将该 watcher 从 synced watcherGroup 中删除
+			s.synced.delete(w)
 			slowWatcherGauge.Inc()
 		}
 	}
@@ -655,12 +676,13 @@ type watcher struct {
 	id     WatchID
 
 	// 过滤器. 触发当前 watcher 实例的事件（Event 结构体就是对 "事件" 的抽象）需要经过
-	// 这些过滤器的过滤才能封装进响应（ WatchResponse 结构体就是对 "响应" 的抽象）中.
+	// 这些过滤器的过滤才能封装进响应（WatchResponse 结构体就是对 "响应" 的抽象）中.
 	fcs []FilterFunc
 	// a chan to send out the watch response.
 	// The chan might be shared with other watchers.
 	//
 	// 当前 watcher 实例被触发后, 会向该通道中写入 WatchResponse. 该通道可能是由多个 watcher 实例共享的.
+	// 该 ch 指向 watchStream.ch, 一个 watchStream 可能管理多个 watcher.
 	ch chan<- WatchResponse
 }
 

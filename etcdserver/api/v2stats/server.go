@@ -46,11 +46,15 @@ func NewServerStats(name, id string) *ServerStats {
 }
 
 type serverStats struct {
+	// 当前节点的名称, 节点名称可通过 --name 配置
 	Name string `json:"name"`
 	// ID is the raft ID of the node.
 	// TODO(jonboulle): use ID instead of name?
+	//
+	// 当前节点的 ID
 	ID        string         `json:"id"`
 	State     raft.StateType `json:"state"`
+	// 当前节点启动的时间
 	StartTime time.Time      `json:"startTime"`
 
 	LeaderInfo struct {

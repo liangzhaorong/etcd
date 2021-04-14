@@ -36,13 +36,19 @@ const minWatchProgressInterval = 100 * time.Millisecond
 type watchServer struct {
 	lg *zap.Logger
 
+	// 当前集群 ID
 	clusterID int64
+	// 当前节点 ID
 	memberID  int64
 
+	// 限制最大的请求大小 1.5M + 512k
 	maxRequestBytes int
 
+	// 指向 etcdserver.EtcdServer 实例
 	sg        etcdserver.RaftStatusGetter
+	// 值实际为 EtcdServer.kv 字段, 即指向 watchableStore 实例
 	watchable mvcc.WatchableKV
+	// 指向 etcdserver.EtcdServer 实例
 	ag        AuthGetter
 }
 
@@ -117,19 +123,29 @@ const ctrlStreamBufLen = 16
 // from client side gRPC stream. It receives watch events from mvcc.WatchStream,
 // and creates responses that forwarded to gRPC stream.
 // It also forwards control message like watch created and canceled.
+//
+// serverWatchStream 负责接收 client 的 gRPC Stream 的 create/cancel watcher 请求（recvLoop goroutine）,
+// 并将从 MVCC 模块接收的 Watch 事件转发给 client（sendLoop goroutine）.
 type serverWatchStream struct {
 	lg *zap.Logger
 
+	// 当前集群 ID
 	clusterID int64
+	// 当前节点 ID
 	memberID  int64
 
+	// 限制请求的最大字节数, 1.5M + 512k
 	maxRequestBytes int
 
+	// 指向 etcdserver.EtcdServer 实例
 	sg        etcdserver.RaftStatusGetter
+	// 值实际为 EtcdServer.kv 字段, 即指向 watchableStore 实例
 	watchable mvcc.WatchableKV
+	// 指向 etcdserver.EtcdServer 实例
 	ag        AuthGetter
 
 	gRPCStream  pb.Watch_WatchServer
+	// 指向 watchStream 实例
 	watchStream mvcc.WatchStream
 	ctrlStream  chan *pb.WatchResponse
 
@@ -150,7 +166,9 @@ type serverWatchStream struct {
 	wg sync.WaitGroup
 }
 
+// Watch 处理客户端的 watch 请求
 func (ws *watchServer) Watch(stream pb.Watch_WatchServer) (err error) {
+	// 创建 serverWatchStream 实例
 	sws := serverWatchStream{
 		lg: ws.lg,
 
@@ -187,6 +205,7 @@ func (ws *watchServer) Watch(stream pb.Watch_WatchServer) (err error) {
 	// may continue to block since it uses a different context, leading to
 	// deadlock when calling sws.close().
 	go func() {
+		// 负责接收 client 的 gRPC Stream 的 create/cancel watcher 请求
 		if rerr := sws.recvLoop(); rerr != nil {
 			if isClientCtxErr(stream.Context().Err(), rerr) {
 				if sws.lg != nil {
@@ -234,8 +253,10 @@ func (sws *serverWatchStream) isWatchPermitted(wcr *pb.WatchCreateRequest) bool 
 	return sws.ag.AuthStore().IsRangePermitted(authInfo, wcr.Key, wcr.RangeEnd) == nil
 }
 
+// recvLoop 负责接收 client 的 gRPC Stream 的 create/cancel watcher 请求
 func (sws *serverWatchStream) recvLoop() error {
 	for {
+		// 从 gRPC Stream 中接收请求
 		req, err := sws.gRPCStream.Recv()
 		if err == io.EOF {
 			return nil
@@ -246,6 +267,7 @@ func (sws *serverWatchStream) recvLoop() error {
 
 		switch uv := req.RequestUnion.(type) {
 		case *pb.WatchRequest_CreateRequest:
+			// 若请求内容为空, 则忽略该请求
 			if uv.CreateRequest == nil {
 				break
 			}
@@ -265,6 +287,7 @@ func (sws *serverWatchStream) recvLoop() error {
 				creq.RangeEnd = []byte{}
 			}
 
+			// 检测用户是否具有 watch 权限, 实际是检测是否具有 range 权限
 			if !sws.isWatchPermitted(creq) {
 				wr := &pb.WatchResponse{
 					Header:       sws.newResponseHeader(sws.watchStream.Rev()),
@@ -282,13 +305,17 @@ func (sws *serverWatchStream) recvLoop() error {
 				}
 			}
 
+			// 获取事件过滤函数集, 用于过滤返回给客户端的 Event 事件
 			filters := FiltersFromRequest(creq)
 
 			wsrev := sws.watchStream.Rev()
+			// 该 watch 请求指定从哪个 main revision 开始监听
 			rev := creq.StartRevision
+			// 若等于 0, 则表示从当前集群中最新的 main revision 开始监听
 			if rev == 0 {
 				rev = wsrev + 1
 			}
+			// 调用 watchStream.Watch() 分配一个 watcher id, 并将 watcher 注册到 MVCC 的 WatchableKV 模块
 			id, err := sws.watchStream.Watch(mvcc.WatchID(creq.WatchId), creq.Key, creq.RangeEnd, rev, filters...)
 			if err == nil {
 				sws.mu.Lock()
@@ -351,6 +378,7 @@ func (sws *serverWatchStream) recvLoop() error {
 	}
 }
 
+// sendLoop 负责将从 MVCC 模块接收的 Watch 事件转发给 client
 func (sws *serverWatchStream) sendLoop() {
 	// watch ids that are currently active
 	ids := make(map[mvcc.WatchID]struct{})
@@ -375,6 +403,7 @@ func (sws *serverWatchStream) sendLoop() {
 
 	for {
 		select {
+		// 监听 watchStream.ch 通道, 获取底层触发的 watcher 事件
 		case wresp, ok := <-sws.watchStream.Chan():
 			if !ok {
 				return
@@ -388,10 +417,12 @@ func (sws *serverWatchStream) sendLoop() {
 			sws.mu.RLock()
 			needPrevKV := sws.prevKV[wresp.WatchID]
 			sws.mu.RUnlock()
+			// 遍历所有的事件
 			for i := range evs {
 				events[i] = &evs[i]
 				if needPrevKV {
 					opt := mvcc.RangeOptions{Rev: evs[i].Kv.ModRevision - 1}
+					// 获取该 key 此次事件之前的键值对数据
 					r, err := sws.watchable.Range(evs[i].Kv.Key, nil, opt)
 					if err == nil && len(r.KVs) != 0 {
 						events[i].PrevKv = &(r.KVs[0])
@@ -400,6 +431,7 @@ func (sws *serverWatchStream) sendLoop() {
 			}
 
 			canceled := wresp.CompactRevision != 0
+			// 创建 pb.WatchResponse 实例
 			wr := &pb.WatchResponse{
 				Header:          sws.newResponseHeader(wresp.Revision),
 				WatchId:         int64(wresp.WatchID),

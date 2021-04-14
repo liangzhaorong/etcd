@@ -61,6 +61,10 @@ func newRevision(lg *zap.Logger, clock clockwork.Clock, retention int64, rg RevG
 const revInterval = 5 * time.Minute
 
 // Run runs revision-based compactor.
+//
+// Run 执行基于 revision 的压缩机制, 创建一个 goroutine 单独执行 revision Compactor,
+// revision Compactor 会根据设置的保留版本号数, 每隔 5 分钟定时获取当前 server 的最大
+// 版本号, 减去想保留的历史版本数, 然后通过 etcd server 的 Compact 接口发起压缩操作.
 func (rc *Revision) Run() {
 	prev := int64(0)
 	go func() {
@@ -77,6 +81,7 @@ func (rc *Revision) Run() {
 				}
 			}
 
+			// 获取当前版本号, 减去保留的版本号数
 			rev := rc.rg.Rev() - rc.retention
 			if rev <= 0 || rev == prev {
 				continue
@@ -92,6 +97,7 @@ func (rc *Revision) Run() {
 			} else {
 				plog.Noticef("Starting auto-compaction at revision %d (retention: %d revisions)", rev, rc.retention)
 			}
+			// 调用 server 的 Compact 接口发起压缩
 			_, err := rc.c.Compact(rc.ctx, &pb.CompactionRequest{Revision: rev})
 			if err == nil || err == mvcc.ErrCompacted {
 				prev = rev

@@ -115,10 +115,16 @@ func init() {
 
 // Config holds the arguments for configuring an etcd server.
 type Config struct {
+	// 当前节点名称, 默认为 default, 可通过 --name 参数配置
 	Name   string `json:"name"`
+	// 数据目录, 默认为 default.etcd, 可通过 --data-dir 参数配置
 	Dir    string `json:"data-dir"`
+	// wal 文件存放目录, 没有配置的话则默认为 {数据目录}/member/wal, 可通过 --wal-dir 参数配置.
+	// 如果配置了 wal 目录, etcd 会将 WAL 文件写入到该指定目录中而不是 dataDir 中. 这允许使用专用
+	// 磁盘, 并有助于避免记录和其他 IO 操作之间的竞争.
 	WalDir string `json:"wal-dir"`
 
+	// 触发快照到磁盘的已提交事务数. 默认 10000
 	SnapshotCount uint64 `json:"snapshot-count"`
 
 	// SnapshotCatchUpEntries is the number of entries for a slow follower
@@ -130,7 +136,9 @@ type Config struct {
 	// Always use "DefaultSnapshotCatchUpEntries"
 	SnapshotCatchUpEntries uint64
 
+	// 要保留的最大快照文件数（0无限制）
 	MaxSnapFiles uint `json:"max-snapshots"`
+	// 要保留的最大 wal 文件数量（0无限制）
 	MaxWalFiles  uint `json:"max-wals"`
 
 	// TickMs is the number of milliseconds between heartbeat ticks.
@@ -176,8 +184,8 @@ type Config struct {
 	MaxTxnOps         uint  `json:"max-txn-ops"`
 	MaxRequestBytes   uint  `json:"max-request-bytes"`
 
-	// LPUrls 中记录了当前节点与集群中其他节点交互的 URL 地址;
-	// LCUrls 中记录了当前节点对客户端提供访问 URL 地址
+	// LPUrls 中记录了当前节点与集群中其他节点交互的 URL 地址, 可通过 --listen-peer-urls 参数配置
+	// LCUrls 中记录了当前节点对客户端提供访问 URL 地址, 可通过 --listen-client-urls 参数配置
 	LPUrls, LCUrls []url.URL
 	APUrls, ACUrls []url.URL
 	ClientTLSInfo  transport.TLSInfo
@@ -190,22 +198,34 @@ type Config struct {
 	// Note that cipher suites are prioritized in the given order.
 	CipherSuites []string `json:"cipher-suites"`
 
+	// 集群状态, 默认 new, 可通过 --initial-cluster-state 参数配置
 	ClusterState          string `json:"initial-cluster-state"`
+	// 用于引导群集的 DNS srv 域, 默认 none.
 	DNSCluster            string `json:"discovery-srv"`
 	DNSClusterServiceName string `json:"discovery-srv-name"`
 	Dproxy                string `json:"discovery-proxy"`
+	// 用于引导群集的发现 URL, 默认为 none.
 	Durl                  string `json:"discovery"`
+	// 引导的初始群集配置, 默认值 "default=http://localhost:2380"
 	InitialCluster        string `json:"initial-cluster"`
+	// 在引导期间，用于 etcd 集群的初始群集令牌. 默认值 "etcd-cluster"
 	InitialClusterToken   string `json:"initial-cluster-token"`
 	StrictReconfigCheck   bool   `json:"strict-reconfig-check"`
 	EnableV2              bool   `json:"enable-v2"`
 
 	// AutoCompactionMode is either 'periodic' or 'revision'.
+	//
+	// etcd 自动的压缩机制, 支持两种模式: periodic（时间周期性压缩）和 revision（保留版本号的压缩）
+	// 可通过 --auto-compaction-mode 参数配置
 	AutoCompactionMode string `json:"auto-compaction-mode"`
 	// AutoCompactionRetention is either duration string with time unit
 	// (e.g. '5m' for 5-minute), or revision unit (e.g. '5000').
 	// If no time unit is provided and compaction mode is 'periodic',
 	// the unit defaults to hour. For example, '5' translates into 5-hour.
+	//
+	// 当 AutoCompactionMode 为 'periodic' 时, 该字段表示保留的时间的周期;
+	// 当 AutoCompactionMode 为 'revision' 时, 该字段表示保留的历史版本号数.
+	// 注意, 当配置 '--auto-compaction-retention' 为 0 时, 将关闭自动压缩机制.
 	AutoCompactionRetention string `json:"auto-compaction-retention"`
 
 	// GRPCKeepAliveMinTime is the minimum interval that a client should
@@ -278,6 +298,9 @@ type Config struct {
 	//The AuthTokenTTL in seconds of the simple token
 	AuthTokenTTL uint `json:"auth-token-ttl"`
 
+	// 开启 etcd 的数据毁坏检测功能:
+	//   etcd 不仅支持在启动时, 通过 --experimental-initial-corrupt-check 参数检查各个节点数据是否一致,
+	// 也支持在运行过程中通过指定 --experimental-corrupt-check-time 参数每隔一定时间检查数据一致性.
 	ExperimentalInitialCorruptCheck bool          `json:"experimental-initial-corrupt-check"`
 	ExperimentalCorruptCheckTime    time.Duration `json:"experimental-corrupt-check-time"`
 	ExperimentalEnableV2V3          string        `json:"experimental-enable-v2v3"`
@@ -672,6 +695,7 @@ func (cfg *Config) PeerURLsMapAndToken(which string) (urlsmap types.URLsMap, tok
 			}
 		}
 
+	// 默认使用静态配置启动 etcd
 	default:
 		// We're statically configured, and cluster has appropriately been set.
 		urlsmap, err = types.NewURLsMap(cfg.InitialCluster)
@@ -826,6 +850,7 @@ func (cfg *Config) UpdateDefaultClusterFromName(defaultInitialCluster string) (s
 		used = true
 	}
 	// update 'initial-cluster' when only the name is specified (e.g. 'etcd --name=abc')
+	// 当使用 --name=abc 参数指定了集群名称时, 才会在这里重新设置 InitialCluster 的值
 	if cfg.Name != DefaultName && cfg.InitialCluster == defaultInitialCluster {
 		cfg.InitialCluster = cfg.InitialClusterFromName(cfg.Name)
 	}

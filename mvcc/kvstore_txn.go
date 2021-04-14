@@ -67,16 +67,18 @@ func (tr *storeTxnRead) End() {
 // storeTxnWrite 实现了 TxnWrite 接口, 其中内嵌了 storeTxnRead
 type storeTxnWrite struct {
 	storeTxnRead
-	// 当前 storeTxnWrite 实例关联的读写事务
+	// 当前 storeTxnWrite 实例关联的读写事务, 实际指向 backend.batchTx 字段
 	tx backend.BatchTx
 	// beginRev is the revision where the txn begins; it will write to the next revision.
 	//
-	// 记录创建当前 storeTxnWrite 实例时 store.currentRev 字段的值
+	// 事务创建时, 记录创建当前 storeTxnWrite 实例时 store.currentRev（main revison） 字段的值
+	// 之后每次事务更改操作都会底层该值
 	beginRev int64
-	// 在当前读写事务中发生改动的键值对信息
+	// 在当前读写事务中发生改动的键值对信息 (注意, 每次更新操作的 次版本号 是该切片的长度)
 	changes  []mvccpb.KeyValue
 }
 
+// Write 创建一个读写事务
 func (s *store) Write(trace *traceutil.Trace) TxnWrite {
 	s.mu.RLock() // 加读锁
 	// 获取读写事务
@@ -89,6 +91,7 @@ func (s *store) Write(trace *traceutil.Trace) TxnWrite {
 		beginRev:     s.currentRev,
 		changes:      make([]mvccpb.KeyValue, 0, 4),
 	}
+	// 将 storeTxnWrite 实例封装成 metricsTxnWrite 实例并返回
 	return newMetricsTxnWrite(tw)
 }
 
@@ -217,8 +220,9 @@ func (tw *storeTxnWrite) put(key, value []byte, leaseID lease.LeaseID) {
 	// if the key exists before, use its previous created and
 	// get its previous leaseID
 	//
-	// 在内存索引中查找对应的键值对信息, 在后面创建 KeyValue 实例时会用到这些值
+	// 调用 treeIndex.Get() 方法在内存索引中查找对应的键值对信息, 在后面创建 KeyValue 实例时会用到这些值
 	_, created, ver, err := tw.s.kvindex.Get(key, rev)
+	// 若为首次添加, 则会返回 not found 错误
 	if err == nil {
 		c = created.main
 		// 先将 Key 值封装成 LeaseItem 实例, 然后通过 lessor.GetLease() 方法查找对应的 Lease 实例
@@ -231,6 +235,7 @@ func (tw *storeTxnWrite) put(key, value []byte, leaseID lease.LeaseID) {
 	// 将 main revision 和 sub revision 两部分写入 ibytes 中, 后续会作为写入 BoltDB 的 key
 	revToBytes(idxRev, ibytes)
 
+	// 递增在该 key 上执行过的修改操作次数
 	ver = ver + 1
 	// 创建 KeyValue 实例
 	kv := mvccpb.KeyValue{
@@ -288,6 +293,7 @@ func (tw *storeTxnWrite) put(key, value []byte, leaseID lease.LeaseID) {
 		if tw.s.le == nil {
 			panic("no lessor to attach lease")
 		}
+		// 调用 lessor.Attach() 方法进行绑定
 		err = tw.s.le.Attach(leaseID, []lease.LeaseItem{{Key: string(key)}})
 		if err != nil {
 			panic("unexpected error from lease Attach")

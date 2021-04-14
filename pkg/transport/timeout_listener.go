@@ -23,10 +23,12 @@ import (
 // If read/write on the accepted connection blocks longer than its time limit,
 // it will return timeout error.
 func NewTimeoutListener(addr string, scheme string, tlsinfo *TLSInfo, rdtimeoutd, wtimeoutd time.Duration) (net.Listener, error) {
+	// 根据 scheme（unix 或 tcp）的类型创建 net.Listener 实例
 	ln, err := newListener(addr, scheme)
 	if err != nil {
 		return nil, err
 	}
+	// 将 net.Listener 实例重新封装为 rwTimeoutListener 实例
 	ln = &rwTimeoutListener{
 		Listener:   ln,
 		rdtimeoutd: rdtimeoutd,
@@ -38,17 +40,21 @@ func NewTimeoutListener(addr string, scheme string, tlsinfo *TLSInfo, rdtimeoutd
 	return ln, nil
 }
 
+// rwTimeoutListener 结构体在 net.Listener 的基础上扩展了读写超时
 type rwTimeoutListener struct {
 	net.Listener
-	wtimeoutd  time.Duration
-	rdtimeoutd time.Duration
+	wtimeoutd  time.Duration // 写超时
+	rdtimeoutd time.Duration // 读超时
 }
 
+// Accept 等待接收客户端的连接
 func (rwln *rwTimeoutListener) Accept() (net.Conn, error) {
+	// 调用底层的 net.Listener.Accept() 方法阻塞等待客户端的连接到来
 	c, err := rwln.Listener.Accept()
 	if err != nil {
 		return nil, err
 	}
+	// 将接收到的 net.Conn 连接实例封装成 timeoutConn 实例, 该实例重写了 Read()、Write() 方法
 	return timeoutConn{
 		Conn:       c,
 		wtimeoutd:  rwln.wtimeoutd,

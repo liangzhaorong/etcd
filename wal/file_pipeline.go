@@ -61,6 +61,7 @@ func newFilePipeline(lg *zap.Logger, dir string, fileSize int64) *filePipeline {
 		errc:  make(chan error, 1),
 		donec: make(chan struct{}),
 	}
+	// 启动一个后台 goroutine, 用于创建新的临时文件夹并将其句柄传递到 filec 通道中
 	go fp.run()
 	return fp
 }

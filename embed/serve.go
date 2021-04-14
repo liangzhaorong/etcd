@@ -48,10 +48,14 @@ import (
 
 type serveCtx struct {
 	lg       *zap.Logger
+	// 该实例会在 net.Listener 的基础上一层层封装, 从顶层到下: limitListener -> net.Listener
 	l        net.Listener
 	addr     string
+	// 使用的网络协议, 默认 tcp
 	network  string
+	// 为 true 表示当前为 https 连接
 	secure   bool
+	// 为 true 表示当前为 http 连接
 	insecure bool
 
 	ctx    context.Context

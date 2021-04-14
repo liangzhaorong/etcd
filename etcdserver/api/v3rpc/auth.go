@@ -21,7 +21,9 @@ import (
 	pb "go.etcd.io/etcd/etcdserver/etcdserverpb"
 )
 
+// AuthServer 认证服务器
 type AuthServer struct {
+	// 指向 etcdserver.EtcdServer 实现
 	authenticator etcdserver.Authenticator
 }
 
@@ -29,6 +31,7 @@ func NewAuthServer(s *etcdserver.EtcdServer) *AuthServer {
 	return &AuthServer{authenticator: s}
 }
 
+// AuthEnable 开启鉴权
 func (as *AuthServer) AuthEnable(ctx context.Context, r *pb.AuthEnableRequest) (*pb.AuthEnableResponse, error) {
 	resp, err := as.authenticator.AuthEnable(ctx, r)
 	if err != nil {
@@ -37,6 +40,7 @@ func (as *AuthServer) AuthEnable(ctx context.Context, r *pb.AuthEnableRequest) (
 	return resp, nil
 }
 
+// AuthDisable 关闭鉴权
 func (as *AuthServer) AuthDisable(ctx context.Context, r *pb.AuthDisableRequest) (*pb.AuthDisableResponse, error) {
 	resp, err := as.authenticator.AuthDisable(ctx, r)
 	if err != nil {
@@ -101,7 +105,9 @@ func (as *AuthServer) RoleGrantPermission(ctx context.Context, r *pb.AuthRoleGra
 	return resp, nil
 }
 
+// UserAdd 添加一个用户
 func (as *AuthServer) UserAdd(ctx context.Context, r *pb.AuthUserAddRequest) (*pb.AuthUserAddResponse, error) {
+	// 调用 etcdserver.EtcdServer.UserAdd() 函数
 	resp, err := as.authenticator.UserAdd(ctx, r)
 	if err != nil {
 		return nil, togRPCError(err)
@@ -109,6 +115,7 @@ func (as *AuthServer) UserAdd(ctx context.Context, r *pb.AuthUserAddRequest) (*p
 	return resp, nil
 }
 
+// UserDelete 删除指定用户
 func (as *AuthServer) UserDelete(ctx context.Context, r *pb.AuthUserDeleteRequest) (*pb.AuthUserDeleteResponse, error) {
 	resp, err := as.authenticator.UserDelete(ctx, r)
 	if err != nil {
@@ -149,6 +156,7 @@ func (as *AuthServer) UserRevokeRole(ctx context.Context, r *pb.AuthUserRevokeRo
 	return resp, nil
 }
 
+// UserChangePassword 更改指定用户密码
 func (as *AuthServer) UserChangePassword(ctx context.Context, r *pb.AuthUserChangePasswordRequest) (*pb.AuthUserChangePasswordResponse, error) {
 	resp, err := as.authenticator.UserChangePassword(ctx, r)
 	if err != nil {

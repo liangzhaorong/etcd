@@ -121,10 +121,12 @@ func encodeFrameSize(dataBytes int) (lenField uint64, padBytes int) {
 	return lenField, padBytes
 }
 
+// flush 将 encoder.bw.buf 缓存中的数据写入到 wal 文件中
 func (e *encoder) flush() error {
 	e.mu.Lock()
 	n, err := e.bw.FlushN()
 	e.mu.Unlock()
+	// 递增监控数据
 	walWriteBytes.Add(float64(n))
 	return err
 }

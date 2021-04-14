@@ -296,7 +296,7 @@ func (le *lessor) SetCheckpointer(cp Checkpointer) {
 	le.cp = cp
 }
 
-// Grant 根据指定的 id 和过期时长新建 Lease 实例, 然后将其保存到 leaseMap 中并进行持久化.
+// Grant 根据指定的 id 和过期时长新建 Lease 实例, 然后将其保存到 leaseMap 中并进行持久化到 BoltDB.
 func (le *lessor) Grant(id LeaseID, ttl int64) (*Lease, error) {
 	if id == NoLease {
 		return nil, ErrLeaseNotFound
@@ -479,6 +479,7 @@ func (le *lessor) Renew(id LeaseID) (int64, error) {
 	return l.ttl, nil
 }
 
+// Lookup 查找指定 id 的 Lease 实例
 func (le *lessor) Lookup(id LeaseID) *Lease {
 	le.mu.RLock()
 	defer le.mu.RUnlock()
@@ -670,6 +671,8 @@ func (le *lessor) runLoop() {
 
 // revokeExpiredLeases finds all leases past their expiry and sends them to epxired channel for
 // to be revoked.
+//
+// revokeExpiredLeases 定时检查是否有过期 Lease, 发起撤销过期的 Lease 操作.
 func (le *lessor) revokeExpiredLeases() {
 	var ls []*Lease
 
@@ -700,12 +703,15 @@ func (le *lessor) revokeExpiredLeases() {
 
 // checkpointScheduledLeases finds all scheduled lease checkpoints that are due and
 // submits them to the checkpointer to persist them to the consensus log.
+//
+// checkpointScheduledLeases 定时触发更新 Lease 的剩余到期时间的操作
 func (le *lessor) checkpointScheduledLeases() {
 	var cps []*pb.LeaseCheckpoint
 
 	// rate limit
 	for i := 0; i < leaseCheckpointRate/2; i++ {
 		le.mu.Lock()
+		// 检测当前节点是否为 Leader 节点
 		if le.isPrimary() {
 			cps = le.findDueScheduledCheckpoints(maxLeaseCheckpointBatchSize)
 		}

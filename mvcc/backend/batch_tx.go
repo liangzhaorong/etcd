@@ -48,7 +48,9 @@ type BatchTx interface {
 	CommitAndStop()
 }
 
+// batchTx 结构体是批量读写事务 BatchTx 接口的实现之一.
 type batchTx struct {
+	// 内嵌了 sync.Mutex
 	sync.Mutex
 	// 该 batchTx 实例底层封装的 bolt.Tx 实例, 即 BoltDB 层面的读写事务.
 	tx      *bolt.Tx
@@ -247,12 +249,14 @@ func (t *batchTx) CommitAndStop() {
 	t.Unlock()
 }
 
+// safePending 获取当前读写事务中执行的修改操作个数
 func (t *batchTx) safePending() int {
 	t.Mutex.Lock()
 	defer t.Mutex.Unlock()
 	return t.pending
 }
 
+// commit 提交读写事务, 并根据 stop 决定是否开启新的读写事务.
 func (t *batchTx) commit(stop bool) {
 	// commit the last tx
 	if t.tx != nil {
@@ -285,10 +289,12 @@ func (t *batchTx) commit(stop bool) {
 	}
 	// 根据 stop 参数决定是否开启读写事务
 	if !stop {
+		// 开启读写事务
 		t.tx = t.backend.begin(true)
 	}
 }
 
+// batchTxBuffered 结构体内嵌了 batchTx 结构体, 在 batchTx 的基础上扩展了缓存功能.
 type batchTxBuffered struct {
 	// 内嵌 batchTx, 注意, 在 batchTx 结构体中内嵌了 sync.Mutex, 并且在 batchTx 和 batchTxBuffered
 	// 中都重写其 Unlock() 方法.
@@ -296,6 +302,7 @@ type batchTxBuffered struct {
 	buf txWriteBuffer // 读写事务的缓存
 }
 
+// newBatchTxBuffered 创建 batchTxBuffered 实例, 该实例是在 batchTx 的基础上扩展了缓存功能.
 func newBatchTxBuffered(backend *backend) *batchTxBuffered {
 	tx := &batchTxBuffered{
 		// 创建内嵌的 batchTx 实例
@@ -306,7 +313,7 @@ func newBatchTxBuffered(backend *backend) *batchTxBuffered {
 			seq:      true, // 顺序写入
 		},
 	}
-	// 开启一个读写事务
+	// 开启事务, 为 t.backend.readTx.tx 开启只读事务; 为 t.batchTx.tx 开启读写事务
 	tx.Commit()
 	return tx
 }
@@ -328,6 +335,8 @@ func (t *batchTxBuffered) Unlock() {
 	t.batchTx.Unlock()
 }
 
+// Commit 开启事务.
+// 为 t.backend.readTx.tx 开启只读事务; 为 t.batchTx.tx 开启读写事务
 func (t *batchTxBuffered) Commit() {
 	t.Lock()
 	t.commit(false)
@@ -340,6 +349,7 @@ func (t *batchTxBuffered) CommitAndStop() {
 	t.Unlock()
 }
 
+// commit 提交事务, stop 参数决定是否开始新的读写事务.
 func (t *batchTxBuffered) commit(stop bool) {
 	// all read txs must be closed to acquire boltdb commit rwlock
 	t.backend.readTx.Lock()
@@ -352,7 +362,10 @@ func (t *batchTxBuffered) unsafeCommit(stop bool) {
 	if t.backend.readTx.tx != nil {
 		// wait all store read transactions using the current boltdb tx to finish,
 		// then close the boltdb tx
+		//
+		// 启动一个单独的 goroutine 来回滚只读事务
 		go func(tx *bolt.Tx, wg *sync.WaitGroup) {
+			// 等待当前只读事务中所有操作都执行完毕
 			wg.Wait()
 			// 回滚只读事务
 			if err := tx.Rollback(); err != nil {
@@ -377,10 +390,11 @@ func (t *batchTxBuffered) unsafeCommit(stop bool) {
 	}
 }
 
+// UnsafePut 将 key-value 键值对写入到 BoltDB 指定 bucketName 中
 func (t *batchTxBuffered) UnsafePut(bucketName []byte, key []byte, value []byte) {
-	// 将键值对写入 BoltDB 中
+	// 调用读写事务接口方法 batchTx.UnsafePut() 将键值对写入 BoltDB 中
 	t.batchTx.UnsafePut(bucketName, key, value)
-	// 将键值对写入缓存
+	// 将键值对写入 txWriteBuffer 缓存中
 	t.buf.put(bucketName, key, value)
 }
 

@@ -141,7 +141,7 @@ func (ws *watchStream) Watch(id WatchID, key, end []byte, startRev int64, fcs ..
 		return -1, ErrEmptyWatcherRange
 	}
 
-	// 若使用 watchStream 中的 nextID 字段来自动生成新建 watcher 的唯一标识
+	// 若为 0 则表示使用 watchStream 中的 nextID 字段来自动生成新建 watcher 的唯一标识
 	if id == AutoWatchID {
 		// 若 nextID 对应的 watcher 已存在, 则递增 nextID
 		for ws.watchers[ws.nextID] != nil {

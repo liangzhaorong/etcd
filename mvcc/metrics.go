@@ -99,6 +99,7 @@ var (
 			Help:      "Total number of watch streams.",
 		})
 
+	// 记录当前 etcd server 中创建的 watcher 总数
 	watcherGauge = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Namespace: "etcd_debugging",
@@ -107,6 +108,7 @@ var (
 			Help:      "Total number of watchers.",
 		})
 
+	// 记录未同步完成的 watcher 数
 	slowWatcherGauge = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Namespace: "etcd_debugging",

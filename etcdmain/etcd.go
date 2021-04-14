@@ -114,6 +114,7 @@ func startEtcdOrProxyV2() {
 		}
 	}
 
+	// 配置 BoltDB 数据库目录, 默认为 default.etcd
 	if cfg.ec.Dir == "" {
 		cfg.ec.Dir = fmt.Sprintf("%v.etcd", cfg.ec.Name)
 		if lg != nil {
@@ -129,7 +130,9 @@ func startEtcdOrProxyV2() {
 	var stopped <-chan struct{}
 	var errc <-chan error
 
+	// 检测并返回数据目录的类型: dirEmpty、dirMember 或 dirProxy
 	which := identifyDataDirOrDie(cfg.ec.GetLogger(), cfg.ec.Dir)
+	// 若数据目录中存在 member 目录或 proxy 目录
 	if which != dirEmpty {
 		if lg != nil {
 			lg.Info(
@@ -155,9 +158,11 @@ func startEtcdOrProxyV2() {
 				plog.Panicf("unhandled dir type %v", which)
 			}
 		}
-	} else {
-		shouldProxy := cfg.isProxy()
+	} else { // 若数据目录为空或不存在
+		shouldProxy := cfg.isProxy() // 检测当前启动的节点是否为代理模式
+		// 若不是代理模式启动
 		if !shouldProxy {
+			// 则调用 startEtcd() 方法启动
 			stopped, errc, err = startEtcd(&cfg.ec)
 			if derr, ok := err.(*etcdserver.DiscoveryError); ok && derr.Err == v2discovery.ErrFullCluster {
 				if cfg.shouldFallbackToProxy() {
@@ -553,6 +558,11 @@ func startProxy(cfg *config) error {
 
 // identifyDataDirOrDie returns the type of the data dir.
 // Dies if the datadir is invalid.
+//
+// identifyDataDirOrDie 根据 dir 目录的存在与否及内容, 检测并返回该目录当前的类型,
+// 如, 若该目录不存在, 则为 dirEmpty; 若存在 member 目录, 则返回 dirMember 类型;
+// 若存在 proxy 目录, 则返回 dirProxy 类型.
+// 注意, 不可以同时存在 member 和 proxy 目录.
 func identifyDataDirOrDie(lg *zap.Logger, dir string) dirType {
 	names, err := fileutil.ReadDir(dir)
 	if err != nil {
@@ -586,6 +596,7 @@ func identifyDataDirOrDie(lg *zap.Logger, dir string) dirType {
 		}
 	}
 
+	// 若数据目录下同时存在 member 和 proxy 目录, 则将导致程序报错退出
 	if m && p {
 		if lg != nil {
 			lg.Fatal("invalid datadir; both member and proxy directories exist")

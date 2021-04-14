@@ -26,8 +26,6 @@ const (
 const DefaultFillPercent = 0.5
 
 // Bucket represents a collection of key/value pairs inside the database.
-//
-// Bucket 表示数据库中的键值对集合, 对应 MySql 中的一张表.
 type Bucket struct {
 	*bucket
 	tx       *Tx                // the associated transaction
@@ -258,9 +256,6 @@ func (b *Bucket) DeleteBucket(key []byte) error {
 // Get retrieves the value for a key in the bucket.
 // Returns a nil value if the key does not exist or if the key is a nested bucket.
 // The returned value is only valid for the life of the transaction.
-//
-// Get 从 Bucket 实例中获取某个键值对. 注意, 从 Get() 方法中返回的值只有在事务打开时才有效,
-// 如果需要在事务之外使用该值, 则必须将其复制一份.
 func (b *Bucket) Get(key []byte) []byte {
 	k, v, flags := b.Cursor().seek(key)
 

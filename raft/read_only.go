@@ -96,7 +96,7 @@ func (ro *readOnly) addRequest(index uint64, m pb.Message) {
 // id: Leader 节点接收到 MsgReadIndex 消息时调用该方法传入的 Leader 节点 ID;
 // context: 接收到的 MsgReadIndex 消息的消息 ID
 func (ro *readOnly) recvAck(id uint64, context []byte) map[uint64]bool {
-	// 获取消息 ID 对应的 readIndexStatus 实例
+	// 获取只读请求 MsgReadIndex 消息 ID 对应的 readIndexStatus 实例
 	rs, ok := ro.pendingReadIndex[string(context)]
 	if !ok {
 		return nil

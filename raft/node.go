@@ -310,6 +310,7 @@ func RestartNode(c *Config) Node {
 
 type msgWithResult struct {
 	m      pb.Message
+	// 消息的处理结果通过该通道返回
 	result chan error
 }
 
@@ -374,6 +375,7 @@ func (n *node) Stop() {
 	<-n.done
 }
 
+// run 根据底层 raft 的状态及上层模块传递的数据, 协调处理 node 中各个通道的数据
 func (n *node) run() {
 	// 指向 node.propc 通道
 	var propc chan msgWithResult
@@ -439,6 +441,7 @@ func (n *node) run() {
 			m.From = r.id
 			// 将消息交给 raft.Step() 处理
 			err := r.Step(m)
+			// 若 pm.result 不为 nil, 则表示上层等待 Raft 处理该 MsgProp 消息的结果
 			if pm.result != nil {
 				pm.result <- err
 				close(pm.result)
@@ -489,6 +492,7 @@ func (n *node) run() {
 		    // 这里, 若为 Leader 节点则推进选举计时器, 若为 Follower 节点则推进心跳计时器
 			n.rn.Tick()
 		case readyc <- rd: // 将前面创建的 Ready 实例写入 node.readyc 通道中, 等待上层模块读取
+			// 上层模块接收了 Ready 实例后, 调用该方法更新 RawNode 实例中的相关字段
 			n.rn.acceptReady(rd)
 			// 将 advancec 指向 node.advancec 通道, 这样在下次 for 循环时, 就无法继续向上层模块返回
 			// Ready 实例了（因为 readyc 会被设置为 nil, 无法向 readyc 通道中写入 Ready 实例）
@@ -526,6 +530,8 @@ func (n *node) Campaign(ctx context.Context) error { return n.step(ctx, pb.Messa
 
 // Propose 接收到 Client 发来的写请求时, Node 实例会调用 Propose() 方法进行处理, 底层就是通过发送 MsgProp 消息实现的.
 func (n *node) Propose(ctx context.Context, data []byte) error {
+	// 将 InternalRaftRequest 实例序列化后的数据 data 封装成 MsgProp 类型的 Message 消息,
+	// 然后调用 node.stepWait() 消息进行处理, 该方法会阻塞等待处理结果.
 	return n.stepWait(ctx, pb.Message{Type: pb.MsgProp, Entries: []pb.Entry{{Data: data}}})
 }
 
@@ -559,6 +565,7 @@ func (n *node) ProposeConfChange(ctx context.Context, cc pb.ConfChangeI) error {
 
 // step 该方法主要处理从其他节点收到的网络消息, 而不是本地消息.
 func (n *node) step(ctx context.Context, m pb.Message) error {
+	// 第三个参数为 false 表示不阻塞等待结果, 将消息发送出去后直接返回
 	return n.stepWithWaitOption(ctx, m, false)
 }
 
@@ -568,6 +575,7 @@ func (n *node) stepWait(ctx context.Context, m pb.Message) error {
 
 // Step advances the state machine using msgs. The ctx.Err() will be returned,
 // if any.
+//
 // wait 为 true 表示等待消息的处理结果
 func (n *node) stepWithWaitOption(ctx context.Context, m pb.Message, wait bool) error {
 	// 非 MsgProp 消息统一写入 node.recvc 通道
@@ -582,12 +590,15 @@ func (n *node) stepWithWaitOption(ctx context.Context, m pb.Message, wait bool) 
 		}
 	}
 	ch := n.propc
+	// 再次将 MsgProp 消息封装成 msgWithResult 实例
 	pm := msgWithResult{m: m}
+	// wait 为 true 表示需等待消息的处理结果
 	if wait {
 		pm.result = make(chan error, 1)
 	}
 	select {
 	case ch <- pm: // 将封装后的 MsgProp 消息写入 propc 通道中
+		// 若无需等待处理结果, 则直接返回
 		if !wait {
 			return nil
 		}
@@ -597,6 +608,7 @@ func (n *node) stepWithWaitOption(ctx context.Context, m pb.Message, wait bool) 
 		return ErrStopped
 	}
 	select {
+	// 监听等待消息的处理结果
 	case err := <-pm.result:
 		if err != nil {
 			return err
@@ -675,8 +687,9 @@ func (n *node) TransferLeadership(ctx context.Context, lead, transferee uint64) 
 	}
 }
 
-// ReadIndex 用于处理只读请求.
+// ReadIndex 用于处理线性读请求.
 func (n *node) ReadIndex(ctx context.Context, rctx []byte) error {
+	// 将传入的值 rctx（实际为当前线性读请求的 id）封装成 MsgReadIndex 类型的 Message 消息
 	return n.step(ctx, pb.Message{Type: pb.MsgReadIndex, Entries: []pb.Entry{{Data: rctx}}})
 }
 

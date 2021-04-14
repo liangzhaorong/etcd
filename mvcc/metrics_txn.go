@@ -18,10 +18,13 @@ import "go.etcd.io/etcd/lease"
 
 // metricsTxnWrite 结构体同时实现了 TxnRead 和 TxnWrite 接口, 并在原有的功能上记录监控信息
 type metricsTxnWrite struct {
+	// 指向 storeTxnWrite 实例
 	TxnWrite
 	ranges  uint
+	// 记录当前事务执行过的 put 操作次数
 	puts    uint
 	deletes uint
+	// 累积当前事务中执行 put 操作写入的数据量大小
 	putSize int64
 }
 
@@ -47,9 +50,11 @@ func (tw *metricsTxnWrite) Put(key, value []byte, lease lease.LeaseID) (rev int6
 	tw.puts++
 	size := int64(len(key) + len(value))
 	tw.putSize += size
+	// 调用 storeTxnWrite.Put() 方法, 返回值是该事务操作后最新的 main revision 值
 	return tw.TxnWrite.Put(key, value, lease)
 }
 
+// End 结束并提交事务
 func (tw *metricsTxnWrite) End() {
 	defer tw.TxnWrite.End()
 	if sum := tw.ranges + tw.puts + tw.deletes; sum > 1 {

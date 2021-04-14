@@ -42,7 +42,9 @@ func (l *limitListener) acquire() { l.sem <- struct{}{} }
 func (l *limitListener) release() { <-l.sem }
 
 func (l *limitListener) Accept() (net.Conn, error) {
+	// 向 l.sem 通道写入一个信号, 若该通道已满, 则阻塞
 	l.acquire()
+	// 调用底层的 net.Listener.Accept() 方法接收客户端的连接请求
 	c, err := l.Listener.Accept()
 	if err != nil {
 		l.release()
@@ -53,7 +55,9 @@ func (l *limitListener) Accept() (net.Conn, error) {
 
 type limitListenerConn struct {
 	net.Conn
+	// 用于当连接关闭时仅调用一次 release 回调函数
 	releaseOnce sync.Once
+	// 当前连接结束时的回调函数, 默认从 l.sem 通道中取出一个信号
 	release     func()
 }
 

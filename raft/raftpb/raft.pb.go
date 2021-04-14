@@ -47,7 +47,7 @@ type EntryType int32
 
 const (
 	EntryNormal       EntryType = 0
-	EntryConfChange   EntryType = 1
+	EntryConfChange   EntryType = 1 // 集群配置变更
 	EntryConfChangeV2 EntryType = 2
 )
 
@@ -340,6 +340,7 @@ type Message struct {
 	// 节点下次从哪个位置开始发送 Entry 记录.
 	Index            uint64      `protobuf:"varint,6,opt,name=index" json:"index"`
 	// 如果是 MsgApp 类型的消息, 则该字段保存了 Leader 节点复制到 Follower 节点的 Entry 记录.
+	// 如果处理的是客户端的消息, 则该 Entry.Data 中保存的是序列化后的 InternalRaftRequest 请求
 	Entries          []Entry     `protobuf:"bytes,7,rep,name=entries" json:"entries"`
 	// 消息发送节点的提交位置（commitIndex）
 	Commit           uint64      `protobuf:"varint,8,opt,name=commit" json:"commit"`

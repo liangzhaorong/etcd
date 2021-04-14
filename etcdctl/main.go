@@ -31,6 +31,7 @@ func main() {
 	apiv := os.Getenv(apiEnv)
 	// unset apiEnv to avoid side-effect for future env and flag parsing.
 	os.Unsetenv(apiEnv)
+	// 默认使用 v3 版本的 API
 	if len(apiv) == 0 || apiv == "3" {
 		ctlv3.Start()
 		return

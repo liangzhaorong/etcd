@@ -309,6 +309,7 @@ func (ti *treeIndex) Equal(bi index) bool {
 
 // Insert 直接调用 BTree.ReplaceOrInsert() 方法插入 keyIndex 实例.
 func (ti *treeIndex) Insert(ki *keyIndex) {
+	// 加全局锁
 	ti.Lock()
 	defer ti.Unlock()
 	ti.tree.ReplaceOrInsert(ki)

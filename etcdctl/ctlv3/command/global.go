@@ -176,6 +176,7 @@ func (cc *clientConfig) mustClient() *clientv3.Client {
 		ExitWithError(ExitBadArgs, err)
 	}
 
+	// 创建一个 clientv3 库对象
 	client, err := clientv3.New(*cfg)
 	if err != nil {
 		ExitWithError(ExitBadConnection, err)

@@ -59,12 +59,15 @@ func (w *list) Register(id uint64) <-chan interface{} {
 	return ch
 }
 
+// Trigger 唤醒等待执行结果的 goroutine
 func (w *list) Trigger(id uint64, x interface{}) {
 	w.l.Lock()
+	// 获取该请求 id 对应的通道
 	ch := w.m[id]
 	delete(w.m, id)
 	w.l.Unlock()
 	if ch != nil {
+		// 向该通道写入执行结果 x
 		ch <- x
 		close(ch)
 	}

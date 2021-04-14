@@ -207,7 +207,10 @@ type EtcdServer struct {
 	// consistIndex used to hold the offset of current executing entry
 	// It is initialized to 0 before executing any entry.
 	//
-	// 其中保存了当前节点应用的最后一条 Entry 记录的索引值
+	// 保存了当前节点已经应用过的最后一条 Entry 记录的索引值, 用于实现幂等性.
+	//
+	// Apply 模块在执行提案内容前, 首先会判断当前提案是否已经执行过了, 如果执行过了则直接返回,
+	// 若未执行同时无 db 配额满告警, 则进入 MVCC 模块, 开始与持久化存储模块打交道.
 	consistIndex consistentIndex // must use atomic operations to access; keep 64-bit aligned.
 	// 关联的 etcdserver.raftNode 实例, 它是 EtcdServer 实例与底层 etcd-raft 模块通信的桥梁.
 	r            raftNode        // uses 64-bit atomics; keep 64-bit aligned.
@@ -284,13 +287,16 @@ type EtcdServer struct {
 	applyWait   wait.WaitTime
 
 	// etcd v3 版本的存储（其中支持 watch 机制）
+	// 指向 watchableStore 实例
 	kv         mvcc.ConsistentWatchableKV
+	// 指向 lessor 实例
 	lessor     lease.Lessor
 	bemu       sync.Mutex
 	// v3 版本的后端存储
 	be         backend.Backend
 	// 在 backend.Backend（这里的 be 字段）之上封装的一层存储, 用于记录权限控制相关的信息
-	// 对应 BoltDB 中的 auth Bucket
+	// 对应 BoltDB 中的 auth Bucket.
+	// 指向 auth.authStore 实例
 	authStore  auth.AuthStore
 	// 在 backend.Backend 之上封装的一层存储, 用于记录报警相关的信息
 	// 对应 BoltDB 中的 alarm Bucket
@@ -400,7 +406,8 @@ func NewServer(cfg ServerConfig) (srv *EtcdServer, err error) {
 		}
 	}()
 
-	// 根据配置创建 RoundTripper 实例, RoundTripper 主要负责实现网络请求等功能
+	// 根据配置创建 RoundTripper 实例, RoundTripper 主要负责实现网络请求等功能,
+	// 底层实际是创建一个没有读写超时的 http.Transport 实例
 	prt, err := rafthttp.NewRoundTripper(cfg.PeerTLSInfo, cfg.peerDialTimeout())
 	if err != nil {
 		return nil, err
@@ -463,7 +470,7 @@ func NewServer(cfg ServerConfig) (srv *EtcdServer, err error) {
 		if err != nil {
 			return nil, err
 		}
-		// 根据当前节点的名称, 从 RaftCluster 中查找当前节点对应的 Member 实例
+		// 根据当前节点的名称, 从 RaftCluster 中查找当前节点对应的 Member 实例的副本
 		m := cl.MemberByName(cfg.Name)
 		// 从集群中其他节点获取当前集群的信息, 检测是否有同名的节点已经启动了
 		if isMemberBootstrapped(cfg.Logger, cl, cfg.Name, prt, cfg.bootstrapTimeout()) {
@@ -663,6 +670,7 @@ func NewServer(cfg ServerConfig) (srv *EtcdServer, err error) {
 			ExpiredLeasesRetryInterval: srv.Cfg.ReqTimeout(),
 		})
 
+	// 创建 TokenProvider 实例
 	tp, err := auth.NewTokenProvider(cfg.Logger, cfg.AuthToken,
 		func(index uint64) <-chan struct{} {
 			return srv.applyWait.Wait(index)
@@ -680,6 +688,7 @@ func NewServer(cfg ServerConfig) (srv *EtcdServer, err error) {
 	// 初始化 EtcdServer.authStore 字段
 	srv.authStore = auth.NewAuthStore(srv.getLogger(), srv.be, tp, int(cfg.BcryptCost))
 
+	// 创建 watchableStore 实例, 并赋给 kv 字段
 	srv.kv = mvcc.New(srv.getLogger(), srv.be, srv.lessor, srv.authStore, &srv.consistIndex, mvcc.StoreConfig{CompactionBatchLimit: cfg.CompactionBatchLimit})
 	if beExist {
 		kvindex := srv.kv.ConsistentIndex()
@@ -750,7 +759,7 @@ func NewServer(cfg ServerConfig) (srv *EtcdServer, err error) {
 		LeaderStats: lstats,
 		ErrorC:      srv.errorc,
 	}
-	// 启动 rafthttp.Transport 实例
+	// 启动 rafthttp.Transport 实例, 主要创建并初始化 stream 和 pipeline这两个消息通道使用的 http.RoundTripper 实例
 	if err = tr.Start(); err != nil {
 		return nil, err
 	}
@@ -876,6 +885,7 @@ func (s *EtcdServer) Start() {
 	s.goAttach(s.monitorVersions)
 	// 启动一个后台 goroutine, 用来实现 Linearizable Read 的功能
 	s.goAttach(s.linearizableReadLoop)
+	// 启动一个后台 goroutine, 用来定时执行 etcd 的数据毁坏检测逻辑
 	s.goAttach(s.monitorKVHash)
 }
 
@@ -1072,6 +1082,7 @@ type raftReadyHandler struct {
 func (s *EtcdServer) run() {
 	lg := s.getLogger()
 
+	// 返回 MemoryStorage 中保存的快照数据
 	sn, err := s.r.raftStorage.Snapshot()
 	if err != nil {
 		if lg != nil {
@@ -2415,10 +2426,14 @@ func (s *EtcdServer) apply(
 // applyEntryNormal apples an EntryNormal type raftpb request to the EtcdServer
 func (s *EtcdServer) applyEntryNormal(e *raftpb.Entry) {
 	shouldApplyV3 := false
+	// consistIndex 保存了当前节点已经应用过的最后一条 Entry 记录的索引值.
+	// 这里是判断当前提案（Entry 条目）是否已经执行过了, 如果执行过了, 直接返回
 	if e.Index > s.consistIndex.ConsistentIndex() {
 		// set the consistent index of current executing entry
+		//
 		// 更新 EtcdServer.consistIndex 记录的索引值
 		s.consistIndex.setConsistentIndex(e.Index)
+		// 置为 true, 表示当前提案没有被执行过
 		shouldApplyV3 = true
 	}
 
@@ -2464,6 +2479,8 @@ func (s *EtcdServer) applyEntryNormal(e *raftpb.Entry) {
 	}
 
 	// do not re-apply applied entries.
+	//
+	// shouldApplyV3 为 false, 表示当前提案（Entry）已经执行过了, 直接返回
 	if !shouldApplyV3 {
 		return
 	}
@@ -2480,7 +2497,7 @@ func (s *EtcdServer) applyEntryNormal(e *raftpb.Entry) {
 		if !needResult && raftReq.Txn != nil {
 			removeNeedlessRangeReqs(raftReq.Txn)
 		}
-		// 调用 applyV3.Apply() 方法处理该 Entry, 其中会根据请求的类型选择不同的方法进行处理
+		// 调用 authApplierV3.Apply() 方法处理该 Entry, 其中会根据请求的类型选择不同的方法进行处理
 		ar = s.applyV3.Apply(&raftReq)
 	}
 

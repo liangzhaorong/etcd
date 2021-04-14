@@ -54,10 +54,11 @@ var (
 
 type Snapshotter struct {
 	lg  *zap.Logger
-	// 指定存储快照文件的目录位置
+	// 指定存储快照文件的目录位置, 默认为 {节点名}.etcd/member/snap
 	dir string
 }
 
+// New 创建 Snapshotter 实例
 func New(lg *zap.Logger, dir string) *Snapshotter {
 	return &Snapshotter{
 		lg:  lg,

@@ -185,7 +185,7 @@ type Config struct {
 	// can be applied.
 	//
 	// 限制可应用的已提交 Entry 记录的总字节数
-	MaxCommittedSizePerReady uint64
+	 MaxCommittedSizePerReady uint64
 	// MaxUncommittedEntriesSize limits the aggregate byte size of the
 	// uncommitted entries that may be appended to a leader's log. Once this
 	// limit is exceeded, proposals will begin to return ErrProposalDropped
@@ -688,12 +688,13 @@ func (r *raft) bcastHeartbeat() {
 	}
 }
 
+// bcastHeartbeatWithCtx 向当前集群中所有节点发送心跳消息
 func (r *raft) bcastHeartbeatWithCtx(ctx []byte) {
 	r.prs.Visit(func(id uint64, _ *tracker.Progress) {
 		if id == r.id { // 略过当前节点自身（Leader 节点）
 			return
 		}
-		// 向指定的节点发送 MsgBeat 消息
+		// 向指定的节点发送 MsgHeartbeat 消息
 		r.sendHeartbeat(id, ctx)
 	})
 }
@@ -1084,6 +1085,7 @@ func (r *raft) poll(id uint64, t pb.MessageType, v bool) (granted int, rejected 
 // Step 是 etcd-raft 模块处理各类消息的入口.
 func (r *raft) Step(m pb.Message) error {
 	// Handle the message term, which may result in our stepping down to a follower.
+	//
 	// 根据 Term 值对消息进行分类处理
 	switch {
 	case m.Term == 0: // 消息的 Term 为 0 则表示为本地消息, 这里不进行处理
@@ -1341,6 +1343,7 @@ func stepLeader(r *raft, m pb.Message) error {
 				}
 				cc = ccc
 			}
+			// 对 EntryConfChange 类型的消息的处理
 			if cc != nil {
 				alreadyPending := r.pendingConfIndex > r.raftLog.applied
 				alreadyJoint := len(r.prs.Config.Voters[1]) > 0
@@ -1372,6 +1375,8 @@ func stepLeader(r *raft, m pb.Message) error {
 		// 通过 MsgApp 消息向集群中其他节点复制 Entry 记录
 		r.bcastAppend()
 		return nil
+
+	// 处理客户端的线性读请求
 	case pb.MsgReadIndex:
 		// If more than the local vote is needed, go through a full broadcast,
 		// otherwise optimize.

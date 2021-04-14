@@ -25,14 +25,26 @@ import (
 // internal node with additional fields
 // PrevValue is the previous value of the node
 // TTL is time to live in second
+//
+// NodeExtern 当其他模块调用 v2 存储的 Storage 接口获取节点数据时, v2 存储并不会直接将相应的 node
+// 实例暴露出去, 而是会将 node 实例封装成 NodeExtern 实例之后再返回.
 type NodeExtern struct {
+	// 对应 node 实例中的 Path 字段. 为实现排序功能, NodeExten 实现了 sort 接口,
+	// 在其 Less() 方法实现中比较的就是 Key 字段.
 	Key           string      `json:"key,omitempty"`
+	// 对应键值对节点中的 Value 字段
 	Value         *string     `json:"value,omitempty"`
+	// 对应节点是否为目录节点
 	Dir           bool        `json:"dir,omitempty"`
+	// 对应节点的过期时间. 如果对应节点是 "永久节点", 则该字段值为 nil
 	Expiration    *time.Time  `json:"expiration,omitempty"`
+	// 对应节点的剩余存活时间, 单位是秒. 如果对应节点是 "永久节点", 则该字段值为 0.
 	TTL           int64       `json:"ttl,omitempty"`
+	// 子节点对应的 NodeExtern 实例
 	Nodes         NodeExterns `json:"nodes,omitempty"`
+	// 对应节点的 ModifiedIndex 字段值
 	ModifiedIndex uint64      `json:"modifiedIndex,omitempty"`
+	// 对应节点的 CreatedIndex 字段值
 	CreatedIndex  uint64      `json:"createdIndex,omitempty"`
 }
 

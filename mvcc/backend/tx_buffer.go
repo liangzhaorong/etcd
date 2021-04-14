@@ -52,7 +52,7 @@ func (txw *txWriteBuffer) put(bucket, k, v []byte) {
 
 // putSeq 向指定 bucketBuffer 添加键值对
 func (txw *txWriteBuffer) putSeq(bucket, k, v []byte) {
-	// 获取指定的 bucketBuffer
+	// 根据 bucket 名获取对应的 bucketBuffer 实例
 	b, ok := txw.buckets[string(bucket)]
 	if !ok {
 		// 如果未找到, 则创建对应的 bucketBuffer 实例并保存到 buckets 中

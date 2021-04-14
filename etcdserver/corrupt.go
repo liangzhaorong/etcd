@@ -145,7 +145,9 @@ func (s *EtcdServer) CheckInitialHashKV() error {
 }
 
 func (s *EtcdServer) monitorKVHash() {
+	// 检测是否开启了 etcd 的数据毁坏检测功能
 	t := s.Cfg.CorruptCheckTime
+	// 若没有开启, 则直接返回
 	if t == 0 {
 		return
 	}
@@ -167,6 +169,7 @@ func (s *EtcdServer) monitorKVHash() {
 			return
 		case <-time.After(t):
 		}
+		// 仅 Leader 执行
 		if !s.isLeader() {
 			continue
 		}
@@ -180,6 +183,9 @@ func (s *EtcdServer) monitorKVHash() {
 	}
 }
 
+// checkHashKV 数据毁坏检测逻辑是: Leader 节点获取它当前最新的版本号, 并通过 Raft 模块的 ReadIndex 机制确认 Leader
+// 身份. 当确认完成后, 获取各个节点的 revision 和 boltdb hash 值, 若出现 Follower 节点的 revision 大于 Leader 等
+// 异常情况后, 就可以认为不一致, 发送 corrupt 告警, 触发集群 corruption 保护, 拒绝写入.
 func (s *EtcdServer) checkHashKV() error {
 	lg := s.getLogger()
 

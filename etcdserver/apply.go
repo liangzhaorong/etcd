@@ -139,15 +139,26 @@ func (a *applierV3backend) Apply(r *pb.InternalRaftRequest) *applyResult {
 	switch {
 	case r.Range != nil:
 		ar.resp, ar.err = a.s.applyV3.Range(context.TODO(), nil, r.Range)
+
+	// 写入一个 kv 数据
 	case r.Put != nil:
+		// 调用 applierV3backend.Put() 方法
 		ar.resp, ar.trace, ar.err = a.s.applyV3.Put(nil, r.Put)
 	case r.DeleteRange != nil:
 		ar.resp, ar.err = a.s.applyV3.DeleteRange(nil, r.DeleteRange)
+
+	// 事务操作
 	case r.Txn != nil:
+		// 调用 applierV3backend.Txn() 方法
 		ar.resp, ar.err = a.s.applyV3.Txn(r.Txn)
+
+	// 压缩操作
 	case r.Compaction != nil:
 		ar.resp, ar.physc, ar.trace, ar.err = a.s.applyV3.Compaction(r.Compaction)
+
+	// 创建一个指定 TTL 秒数的 Lease
 	case r.LeaseGrant != nil:
+		// 调用 applierV3backend.LeaseGrant() 方法
 		ar.resp, ar.err = a.s.applyV3.LeaseGrant(r.LeaseGrant)
 	case r.LeaseRevoke != nil:
 		ar.resp, ar.err = a.s.applyV3.LeaseRevoke(r.LeaseRevoke)
@@ -157,12 +168,20 @@ func (a *applierV3backend) Apply(r *pb.InternalRaftRequest) *applyResult {
 		ar.resp, ar.err = a.s.applyV3.Alarm(r.Alarm)
 	case r.Authenticate != nil:
 		ar.resp, ar.err = a.s.applyV3.Authenticate(r.Authenticate)
+
+	// 启用鉴权
 	case r.AuthEnable != nil:
+		// 调用 applierV3backend.AuthEnable() 方法进行处理
 		ar.resp, ar.err = a.s.applyV3.AuthEnable()
 	case r.AuthDisable != nil:
 		ar.resp, ar.err = a.s.applyV3.AuthDisable()
+
+	// 添加用户
 	case r.AuthUserAdd != nil:
+		// 调用 applierV3backend.UserAdd() 方法进行处理
 		ar.resp, ar.err = a.s.applyV3.UserAdd(r.AuthUserAdd)
+
+	// 删除指定用户
 	case r.AuthUserDelete != nil:
 		ar.resp, ar.err = a.s.applyV3.UserDelete(r.AuthUserDelete)
 	case r.AuthUserChangePassword != nil:
@@ -201,6 +220,7 @@ func (a *applierV3backend) Put(txn mvcc.TxnWrite, p *pb.PutRequest) (resp *pb.Pu
 		traceutil.Field{Key: "key", Value: string(p.Key)},
 		traceutil.Field{Key: "req_size", Value: proto.Size(p)},
 	)
+	// 获取将要写入的 value 和将要绑定的 Lease 的 id
 	val, leaseID := p.Value, lease.LeaseID(p.Lease)
 	// 如果传入的 txn 事务为空, 则开启新事务
 	if txn == nil {
@@ -210,16 +230,17 @@ func (a *applierV3backend) Put(txn mvcc.TxnWrite, p *pb.PutRequest) (resp *pb.Pu
 				return nil, nil, lease.ErrLeaseNotFound
 			}
 		}
-		// 创建读写事务
+		// 调用 watchableStore.Write() 方法创建读写事务, 该方法将返回 watchableStoreTxnWrite 实例
 		txn = a.s.KV().Write(trace)
-		defer txn.End() // 方法结束时关闭该方法中开启的事务
+		// 当前方法结束时调用 watchableStoreTxnWrite.End() 方法关闭该方法中开启的事务
+		defer txn.End()
 	}
 
 	var rr *mvcc.RangeResult
 	// 如果设置了 IgnoreValue、IgnoreLease 或是 PrevKv
 	if p.IgnoreValue || p.IgnoreLease || p.PrevKv {
 		trace.DisableStep()
-		// 则需要当前的键值对信息
+		// 调用 metricsTxnWrite.Range() 方法查询当前的键值对信息
 		rr, err = txn.Range(p.Key, nil, mvcc.RangeOptions{})
 		if err != nil {
 			return nil, nil, err
@@ -249,7 +270,7 @@ func (a *applierV3backend) Put(txn mvcc.TxnWrite, p *pb.PutRequest) (resp *pb.Pu
 		}
 	}
 
-	// 调用 Put() 方法完成更新操作, 在 PutResponse.Header 中记录 revision 信息
+	// 调用 metricsTxnWrite.Put() 方法完成更新操作, 在 PutResponse.Header 中记录该 Put 操作后最新的 revision 信息
 	resp.Header.Revision = txn.Put(p.Key, val, leaseID)
 	trace.AddField(traceutil.Field{Key: "response_revision", Value: resp.Header.Revision})
 	return resp, trace, nil
@@ -646,7 +667,7 @@ func (a *applierV3backend) Compaction(compaction *pb.CompactionRequest) (*pb.Com
 		traceutil.Field{Key: "revision", Value: compaction.Revision},
 	)
 
-	// 完成压缩操作
+	// 调用 store.Compact() 方法完成压缩操作
 	ch, err := a.s.KV().Compact(trace, compaction.Revision)
 	if err != nil {
 		return nil, ch, nil, err
@@ -781,11 +802,14 @@ func (a *applierV3Capped) LeaseGrant(lc *pb.LeaseGrantRequest) (*pb.LeaseGrantRe
 	return nil, ErrNoSpace
 }
 
+// AuthEnable 启用鉴权功能
 func (a *applierV3backend) AuthEnable() (*pb.AuthEnableResponse, error) {
+	// 调用 auth.authStore.AuthEnable() 方法进行处理
 	err := a.s.AuthStore().AuthEnable()
 	if err != nil {
 		return nil, err
 	}
+	// 返回启用鉴权成功的响应
 	return &pb.AuthEnableResponse{Header: newHeader(a.s)}, nil
 }
 
@@ -803,7 +827,9 @@ func (a *applierV3backend) Authenticate(r *pb.InternalAuthenticateRequest) (*pb.
 	return resp, err
 }
 
+// UserAdd 添加用户
 func (a *applierV3backend) UserAdd(r *pb.AuthUserAddRequest) (*pb.AuthUserAddResponse, error) {
+	// 调用 auth.authStore.UserAdd() 方法进行处理
 	resp, err := a.s.AuthStore().UserAdd(r)
 	if resp != nil {
 		resp.Header = newHeader(a.s)
@@ -910,7 +936,7 @@ func (a *applierV3backend) RoleList(r *pb.AuthRoleListRequest) (*pb.AuthRoleList
 // quotaApplierV3 在 applierV3backend 的基础上提供了限流功能, 即底层的 BoltDB
 // 数据库文件的大小增大到上限之后, 就会触发限流操作.
 type quotaApplierV3 struct {
-	// 内嵌 applierV3
+	// 内嵌 applierV3, 实际指向 applierV3backend 实例
 	applierV3
 	q Quota
 }

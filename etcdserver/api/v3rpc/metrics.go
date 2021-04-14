@@ -17,6 +17,7 @@ package v3rpc
 import "github.com/prometheus/client_golang/prometheus"
 
 var (
+	// 表示 server 发送给 client 的总字节数, 通过该指标可监控 etcd 出流量
 	sentBytes = prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace: "etcd",
 		Subsystem: "network",
@@ -24,6 +25,7 @@ var (
 		Help:      "The total number of bytes sent to grpc clients.",
 	})
 
+	// 表示 server 收到 client 发送的总字节数, 通过该指标可监控 etcd 入流量
 	receivedBytes = prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace: "etcd",
 		Subsystem: "network",

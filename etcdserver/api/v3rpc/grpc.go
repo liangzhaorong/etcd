@@ -56,14 +56,17 @@ func Server(s *etcdserver.EtcdServer, tls *tls.Config, gopts ...grpc.ServerOptio
 	opts = append(opts, grpc.MaxRecvMsgSize(int(s.Cfg.MaxRequestBytes+grpcOverheadBytes)))
 	opts = append(opts, grpc.MaxSendMsgSize(maxSendBytes))
 	opts = append(opts, grpc.MaxConcurrentStreams(maxStreams))
+	// 创建 grpc.Server 实例
 	grpcServer := grpc.NewServer(append(opts, gopts...)...)
 
 	// 注册 KVServer
 	pb.RegisterKVServer(grpcServer, NewQuotaKVServer(s))
 	// 注册 WatchServer
 	pb.RegisterWatchServer(grpcServer, NewWatchServer(s))
+	// 注册租约服务器, 处理客户端租约相关请求
 	pb.RegisterLeaseServer(grpcServer, NewQuotaLeaseServer(s))
 	pb.RegisterClusterServer(grpcServer, NewClusterServer(s))
+	// 注册认证服务器, 处理客户端鉴权相关请求
 	pb.RegisterAuthServer(grpcServer, NewAuthServer(s))
 	pb.RegisterMaintenanceServer(grpcServer, NewMaintenanceServer(s))
 

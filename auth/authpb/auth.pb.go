@@ -63,6 +63,7 @@ func (x Permission_Type) String() string {
 func (Permission_Type) EnumDescriptor() ([]byte, []int) { return fileDescriptorAuth, []int{2, 0} }
 
 type UserAddOptions struct {
+	// 指定添加的用户是否为无密码模式
 	NoPassword bool `protobuf:"varint,1,opt,name=no_password,json=noPassword,proto3" json:"no_password,omitempty"`
 }
 
@@ -73,8 +74,11 @@ func (*UserAddOptions) Descriptor() ([]byte, []int) { return fileDescriptorAuth,
 
 // User is a single entry in the bucket authUsers
 type User struct {
+	// 用户名
 	Name     []byte          `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// 经过一系列加密算法加密后的 用户密码
 	Password []byte          `protobuf:"bytes,2,opt,name=password,proto3" json:"password,omitempty"`
+	// 当前用户具有的角色（即权限）
 	Roles    []string        `protobuf:"bytes,3,rep,name=roles" json:"roles,omitempty"`
 	Options  *UserAddOptions `protobuf:"bytes,4,opt,name=options" json:"options,omitempty"`
 }

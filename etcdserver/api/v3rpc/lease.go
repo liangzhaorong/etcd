@@ -29,6 +29,7 @@ import (
 type LeaseServer struct {
 	lg  *zap.Logger
 	hdr header
+	// 指向 etcdserver.EtcdServer 实例
 	le  etcdserver.Lessor
 }
 
@@ -37,6 +38,7 @@ func NewLeaseServer(s *etcdserver.EtcdServer) pb.LeaseServer {
 }
 
 func (ls *LeaseServer) LeaseGrant(ctx context.Context, cr *pb.LeaseGrantRequest) (*pb.LeaseGrantResponse, error) {
+	// 调用 etcdserver.EtcdServer.LeaseGrant() 方法进行处理
 	resp, err := ls.le.LeaseGrant(ctx, cr)
 
 	if err != nil {

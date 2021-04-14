@@ -26,10 +26,18 @@ const (
 )
 
 type Event struct {
+	// 该 Event 实例对应的操作, 可选项有 Get、Create、Set、Update、Delete、CompareAndSwap、
+	// CompareAndDelete 和 Expire.
 	Action    string      `json:"action"`
+	// 当前操作节点对应的 NodeExtern 实例
 	Node      *NodeExtern `json:"node,omitempty"`
+	// 如果是更新操作, 则记录该节点之前状态对应的 NodeExtern 实例
 	PrevNode  *NodeExtern `json:"prevNode,omitempty"`
+	// 记录操作完成之后的 CurrentIndex 值
 	EtcdIndex uint64      `json:"-"`
+	// 如果是 Set、Update、CompareAndSwap 三种涉及值更新的操作, 则该字段都有可能被设置为 true.
+	// 当该字段被设置为 true 时, 表示该 Event 实例对应的修改操作只进行刷新操作（如, 只修改了节点
+	// 的过期时间）, 并没有改变节点的值, 不会触发相应的 watcher.
 	Refresh   bool        `json:"refresh,omitempty"`
 }
 

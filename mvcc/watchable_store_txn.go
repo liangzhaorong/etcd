@@ -19,7 +19,8 @@ import (
 	"go.etcd.io/etcd/pkg/traceutil"
 )
 
-// End 重写了内嵌的 TxnWrite 接口的 End() 方法, 在该方法中, 如果检测到当前读写事务中存在更新操作, 则会触发相应的 watcher 实例.
+// End 重写了内嵌的 TxnWrite 接口的 End() 方法, 在该方法中, 如果检测到当前读写事务中
+// 存在更新操作, 则会触发相应的 watcher 实例.
 func (tw *watchableStoreTxnWrite) End() {
 	changes := tw.Changes() // 当前读写事务中执行的更新操作
 	// 如果当前读写事务中没有任何更新操作, 则直接结束当前事务即可
@@ -53,6 +54,7 @@ func (tw *watchableStoreTxnWrite) End() {
 }
 
 type watchableStoreTxnWrite struct {
+	// 指向 metricsTxnWrite 实例
 	TxnWrite          // 内嵌了 TxnWrite, 并且 watchableStoreTxnWrite 重写了 End() 方法
 	s *watchableStore // 关联的 watchableStore 实例
 }

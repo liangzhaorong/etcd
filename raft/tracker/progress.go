@@ -32,7 +32,7 @@ import (
 // 每个 Follower 节点对应的 NextIndex 值和 MatchIndex 值都封装在 Progress 实例中, 除此之外, 每个
 // Progress 实例中还封装了对应 Follower 节点的相关信息.
 type Progress struct {
-	// Match: 对应 Follower 节点当前已经成功复制的 Entry 记录的索引值; (即已追加到 raftLog 中)
+	// Match: 对应 Follower 节点当前已复制的最大日志条目的索引值; (即已追加到 raftLog 中)
 	// Next: 对应 Follower 节点下一个待复制的 Entry 记录的索引值.
 	Match, Next uint64
 	// State defines how the leader should interact with the follower.

@@ -23,9 +23,9 @@ import (
 )
 
 var (
-	getConsistency string
+	getConsistency string // 指定读模式, l:线性读（Linearizable Read）还是 s:串行读（Serializable Read）, 默认线性读
 	getLimit       int64
-	getSortOrder   string
+	getSortOrder   string // 返回结果默认按升序 ASCEND 排序
 	getSortTarget  string
 	getPrefix      bool
 	getFromKey     bool
@@ -42,6 +42,7 @@ func NewGetCommand() *cobra.Command {
 		Run:   getCommandFunc,
 	}
 
+	// 指定读模式, 线性读（Linearizable Read）还是串行读（Serializable Read）, 默认线性读
 	cmd.Flags().StringVar(&getConsistency, "consistency", "l", "Linearizable(l) or Serializable(s)")
 	cmd.Flags().StringVar(&getSortOrder, "order", "", "Order of results; ASCEND or DESCEND (ASCEND by default)")
 	cmd.Flags().StringVar(&getSortTarget, "sort-by", "", "Sort target; CREATE, KEY, MODIFY, VALUE, or VERSION")
@@ -56,6 +57,7 @@ func NewGetCommand() *cobra.Command {
 
 // getCommandFunc executes the "get" command.
 func getCommandFunc(cmd *cobra.Command, args []string) {
+	// 解析参数
 	key, opts := getGetOp(args)
 	ctx, cancel := commandCtx(cmd)
 	resp, err := mustClientFromCmd(cmd).Get(ctx, key, opts...)

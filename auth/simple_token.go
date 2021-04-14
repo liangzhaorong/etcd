@@ -42,11 +42,14 @@ var (
 )
 
 type simpleTokenTTLKeeper struct {
+	// 缓存 token 和其过期时间的映射关系
 	tokens          map[string]time.Time
 	donec           chan struct{}
 	stopc           chan struct{}
+	// 删除指定 token 的回调方法
 	deleteTokenFunc func(string)
 	mu              *sync.Mutex
+	// token 的存活时长
 	simpleTokenTTL  time.Duration
 }
 
@@ -72,7 +75,9 @@ func (tm *simpleTokenTTLKeeper) deleteSimpleToken(token string) {
 	delete(tm.tokens, token)
 }
 
+// run 每秒清理一次过期 token
 func (tm *simpleTokenTTLKeeper) run() {
+	// 创建一个每秒执行一次的定时器
 	tokenTicker := time.NewTicker(simpleTokenTTLResolution)
 	defer func() {
 		tokenTicker.Stop()
@@ -84,6 +89,7 @@ func (tm *simpleTokenTTLKeeper) run() {
 			nowtime := time.Now()
 			tm.mu.Lock()
 			for t, tokenendtime := range tm.tokens {
+				// 若 token 已过期, 则删除
 				if nowtime.After(tokenendtime) {
 					tm.deleteTokenFunc(t)
 					delete(tm.tokens, t)
@@ -99,9 +105,12 @@ func (tm *simpleTokenTTLKeeper) run() {
 type tokenSimple struct {
 	lg                *zap.Logger
 	indexWaiter       func(uint64) <-chan struct{}
+	// token 生命周期维护器
 	simpleTokenKeeper *simpleTokenTTLKeeper
 	simpleTokensMu    sync.Mutex
+	// 缓存 token 和用户名的映射关系
 	simpleTokens      map[string]string // token -> username
+	// token 存活时长, 默认存活 300s
 	simpleTokenTTL    time.Duration
 }
 
@@ -164,6 +173,7 @@ func (t *tokenSimple) enable() {
 	}
 
 	delf := func(tk string) {
+		// 根据 token 获取对应的 username
 		if username, ok := t.simpleTokens[tk]; ok {
 			if t.lg != nil {
 				t.lg.Info(
@@ -174,6 +184,7 @@ func (t *tokenSimple) enable() {
 			} else {
 				plog.Infof("deleting token %s for user %s", tk, username)
 			}
+			// 从缓存中删除该 token
 			delete(t.simpleTokens, tk)
 		}
 	}
@@ -185,6 +196,7 @@ func (t *tokenSimple) enable() {
 		mu:              &t.simpleTokensMu,
 		simpleTokenTTL:  t.simpleTokenTTL,
 	}
+	// 启动一个独立的 goroutine, 每秒清理一次过期 token
 	go t.simpleTokenKeeper.run()
 }
 
@@ -212,6 +224,7 @@ func (t *tokenSimple) info(ctx context.Context, token string, revision uint64) (
 	return &AuthInfo{Username: username, Revision: revision}, ok
 }
 
+// assign 为指定用户分配一个新的 token
 func (t *tokenSimple) assign(ctx context.Context, username string, rev uint64) (string, error) {
 	// rev isn't used in simple token, it is only used in JWT
 	index := ctx.Value(AuthenticateParamIndex{}).(uint64)

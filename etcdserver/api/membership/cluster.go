@@ -50,7 +50,7 @@ type RaftCluster struct {
 	localID types.ID
 	// 当前集群的 ID
 	cid     types.ID
-	// 当前集群的 token
+	// 当前集群的 token, 默认 "etcd-cluster", 可通过 --initial-cluster-token 启动参数配置
 	token   string
 
 	// etcd v2 版本的持久化存储
@@ -88,16 +88,20 @@ type ConfigChangeContext struct {
 // NewClusterFromURLsMap urlsmap 参数中封装了集群中每个节点的名称与其提供的 URL 之间的映射, 在 NewClusterFromURLsMap()
 // 函数中会根据该映射关系创建相应的 Member 实例和 RaftCluster 实例.
 func NewClusterFromURLsMap(lg *zap.Logger, token string, urlsmap types.URLsMap) (*RaftCluster, error) {
-	c := NewCluster(lg, token) // 创建 RaftCluster 实例
+	// 创建 RaftCluster 实例
+	c := NewCluster(lg, token)
 	// 遍历集群中节点的地址, 并创建对应的 Member 实例
 	for name, urls := range urlsmap {
+		// 创建一个 Member 实例
 		m := NewMember(name, urls, token, nil)
+		// 若该 Member.ID 对应的 Member 实例已存在, 则报错退出
 		if _, ok := c.members[m.ID]; ok {
 			return nil, fmt.Errorf("member exists with identical ID %v", m)
 		}
 		if uint64(m.ID) == raft.None {
 			return nil, fmt.Errorf("cannot use %x as member id", raft.None)
 		}
+		// 将新创建的 Member 实例与该 ID 的映射关系保存到 members 字段中
 		c.members[m.ID] = m
 	}
 	// 通过所有节点的 ID, 为集群生成一个 ID
@@ -159,10 +163,13 @@ func (c *RaftCluster) VotingMembers() []*Member {
 
 // MemberByName returns a Member with the given name if exists.
 // If more than one member has the given name, it will panic.
+//
+// MemberByName 根据节点名称从 members 字段中获取对应的 Member 实例的副本
 func (c *RaftCluster) MemberByName(name string) *Member {
 	c.Lock()
 	defer c.Unlock()
 	var memb *Member
+	// 遍历所有的 Member 实例
 	for _, m := range c.members {
 		if m.Name == name {
 			if memb != nil {
@@ -175,9 +182,11 @@ func (c *RaftCluster) MemberByName(name string) *Member {
 			memb = m
 		}
 	}
+	// 获取 Member 实例的副本
 	return memb.Clone()
 }
 
+// MemberIDs 返回当前集群中经过排序后的所有节点的 ID 列表
 func (c *RaftCluster) MemberIDs() []types.ID {
 	c.Lock()
 	defer c.Unlock()
@@ -243,6 +252,7 @@ func (c *RaftCluster) String() string {
 
 // genID 通过所有节点的 ID, 为集群生成一个 ID
 func (c *RaftCluster) genID() {
+	// 获取当前集群中经过排序后的所有节点 ID 列表
 	mIDs := c.MemberIDs()
 	b := make([]byte, 8*len(mIDs))
 	for i, id := range mIDs {

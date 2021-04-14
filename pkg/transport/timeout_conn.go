@@ -19,14 +19,17 @@ import (
 	"time"
 )
 
+// timeoutConn 代表一个客户端的连接实例, 该结构体在 net.Conn 的基础上扩展了读写超时, 并
+// 重写了 net.Conn 的 Read()、Write() 方法.
 type timeoutConn struct {
 	net.Conn
-	wtimeoutd  time.Duration
-	rdtimeoutd time.Duration
+	wtimeoutd  time.Duration // 写超时时间, 默认 5s
+	rdtimeoutd time.Duration // 读超时时间, 默认 5s
 }
 
 func (c timeoutConn) Write(b []byte) (n int, err error) {
 	if c.wtimeoutd > 0 {
+		// 设置请求的写超时时间
 		if err := c.SetWriteDeadline(time.Now().Add(c.wtimeoutd)); err != nil {
 			return 0, err
 		}
@@ -36,6 +39,7 @@ func (c timeoutConn) Write(b []byte) (n int, err error) {
 
 func (c timeoutConn) Read(b []byte) (n int, err error) {
 	if c.rdtimeoutd > 0 {
+		// 设置请求的读超时时间
 		if err := c.SetReadDeadline(time.Now().Add(c.rdtimeoutd)); err != nil {
 			return 0, err
 		}

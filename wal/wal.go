@@ -1134,6 +1134,7 @@ func (w *WAL) Save(st raftpb.HardState, ents []raftpb.Entry) error {
 	return w.cut()
 }
 
+// SaveSnapshot 将传入的 snapshot 封装成类型为 snapshotType 的 Record 记录并保存到 wal文件中.
 func (w *WAL) SaveSnapshot(e walpb.Snapshot) error {
 	b := pbutil.MustMarshal(&e)
 
@@ -1148,6 +1149,7 @@ func (w *WAL) SaveSnapshot(e walpb.Snapshot) error {
 	if w.enti < e.Index {
 		w.enti = e.Index
 	}
+	// 将已经写入到 w.encoder.bw.buf 缓存中的 Record 记录写入到 wal 文件中
 	return w.sync()
 }
 

@@ -17,6 +17,7 @@ package wal
 import "github.com/prometheus/client_golang/prometheus"
 
 var (
+	// 表示 WAL 日志持久化的 fsync 系统调用延时数据
 	walFsyncSec = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Namespace: "etcd",
 		Subsystem: "disk",

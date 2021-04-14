@@ -102,6 +102,7 @@ func (wb watcherBatch) add(w *watcher, ev mvccpb.Event) {
 // newWatcherBatch maps watchers to their matched events. It enables quick
 // events look up by watcher.
 func newWatcherBatch(wg *watcherGroup, evs []mvccpb.Event) watcherBatch {
+	// 若没有同步完成的 watcher 实例, 则直接返回 nil
 	if len(wg.watchers) == 0 {
 		return nil
 	}
@@ -109,7 +110,10 @@ func newWatcherBatch(wg *watcherGroup, evs []mvccpb.Event) watcherBatch {
 	wb := make(watcherBatch)
 	// 遍历所有事件
 	for _, ev := range evs {
+		// 根据 key 检索出正在监听该 key 的 watcher 实例
 		for w := range wg.watcherSetByKey(string(ev.Kv.Key)) {
+			// 事件中的版本号必须要大于等于 watcher 监听的最小版本号,
+			// 才允许将事件发送到此 watcher 的事件 channel 中
 			if ev.Kv.ModRevision >= w.minRev {
 				// don't double notify
 				wb.add(w, ev)
@@ -168,6 +172,8 @@ func (w watcherSetByKey) delete(wa *watcher) bool {
 }
 
 // watcherGroup is a collection of watchers organized by their ranges
+//
+// watcherGroup 负责管理多个 watcher, 能够根据 key 快速找到监听该 key 的一个或多个 watcher.
 type watcherGroup struct {
 	// keyWatchers has the watchers that watch on a single key
 	//
@@ -224,6 +230,7 @@ func (wg *watcherGroup) add(wa *watcher) {
 	// 当前 IntervalTree 中没有对应节点, 则创建对应的 watcherSet, 并添加到 IntervalTree 中
 	ws := make(watcherSet)
 	ws.add(wa)
+	// 将该节点插入到线段树中
 	wg.ranges.Insert(ivl, ws)
 }
 
@@ -327,6 +334,8 @@ func (wg *watcherGroup) chooseAll(curRev, compactRev int64) int64 {
 }
 
 // watcherSetByKey gets the set of watchers that receive events on the given key.
+//
+// watcherSetByKey 根据 key 检索出正在监听该 key 的 watcher 实例
 func (wg *watcherGroup) watcherSetByKey(key string) watcherSet {
 	wkeys := wg.keyWatchers[key]
 	wranges := wg.ranges.Stab(adt.NewStringAffinePoint(key))

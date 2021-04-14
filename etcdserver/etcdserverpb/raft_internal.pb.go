@@ -21,6 +21,7 @@ var _ = fmt.Errorf
 var _ = math.Inf
 
 type RequestHeader struct {
+	// 请求 ID, 唯一
 	ID uint64 `protobuf:"varint,1,opt,name=ID,proto3" json:"ID,omitempty"`
 	// username is a username that is associated with an auth token of gRPC connection
 	Username string `protobuf:"bytes,2,opt,name=username,proto3" json:"username,omitempty"`

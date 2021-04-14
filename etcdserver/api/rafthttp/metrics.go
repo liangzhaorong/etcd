@@ -17,6 +17,7 @@ package rafthttp
 import "github.com/prometheus/client_golang/prometheus"
 
 var (
+	// 表示 peer 之间活跃的连接数
 	activePeers = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "etcd",
 		Subsystem: "network",
@@ -53,6 +54,7 @@ var (
 		[]string{"From"},
 	)
 
+	// 表示发送给 peer 的失败消息数
 	sentFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "etcd",
 		Subsystem: "network",
@@ -151,6 +153,7 @@ var (
 		[]string{"From"},
 	)
 
+	// 表示 peer 之间 RTT 延时
 	rttSec = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "etcd",
 		Subsystem: "network",

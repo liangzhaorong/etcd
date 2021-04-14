@@ -20,6 +20,7 @@ import (
 	"go.etcd.io/etcd/wal"
 )
 
+// isMemberInitialized 检测当前节点是否已初始化 member, 即数据目录下存在 member/wal/xx.wal 文件
 func isMemberInitialized(cfg *Config) bool {
 	waldir := cfg.WalDir
 	if waldir == "" {

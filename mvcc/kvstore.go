@@ -76,7 +76,9 @@ type StoreConfig struct {
 
 // store 实现了 KV 接口.
 type store struct {
+	// 指向 readView 实例
 	ReadView
+	// 指向 writeView 实例
 	WriteView
 
 	// consistentIndex caches the "consistent_index" key's value. Accessed
@@ -93,7 +95,7 @@ type store struct {
 
 	ig ConsistentIndexGetter
 
-	// 当前 store 实例关联的后端存储
+	// 当前 store 实例关联的后端存储, 指向 backend 实例
 	b       backend.Backend
 	// 当前 store 实例关联的内存索引 treeIndex
 	kvindex index
@@ -109,7 +111,7 @@ type store struct {
 	revMu sync.RWMutex
 	// currentRev is the revision of the last completed transaction.
 	//
-	// 记录当前的 revision 信息（main revision 部分的值）
+	// 记录当前 etcd server 最新的 main revision 值
 	currentRev int64
 	// compactMainRev is the main revision of the last compaction.
 	//
@@ -264,6 +266,7 @@ func (s *store) HashByRev(rev int64) (hash uint32, currentRev int64, compactRev 
 
 func (s *store) updateCompactRev(rev int64) (<-chan struct{}, error) {
 	s.revMu.Lock()
+	// 首先检查 Compact 请求的版本号 rev 是否已经被压缩过了, 若是则返回 ErrCompacted 错误
 	if rev <= s.compactMainRev {
 		ch := make(chan struct{})
 		f := func(ctx context.Context) { s.compactBarrier(ctx, ch) }
@@ -271,6 +274,7 @@ func (s *store) updateCompactRev(rev int64) (<-chan struct{}, error) {
 		s.revMu.Unlock()
 		return ch, ErrCompacted
 	}
+	// 其次检查 rev 是否大于当前 etcd server 的最大版本号, 若是则返回 ErrFutureRev 错误
 	if rev > s.currentRev {
 		s.revMu.Unlock()
 		return nil, ErrFutureRev
@@ -283,6 +287,7 @@ func (s *store) updateCompactRev(rev int64) (<-chan struct{}, error) {
 
 	tx := s.b.BatchTx()
 	tx.Lock()
+	// 调用 boltdb 的 API 在 meta bucket 中更新当前已调度的压缩版本号
 	tx.UnsafePut(metaBucketName, scheduledCompactKeyName, rbytes)
 	tx.Unlock()
 	// ensure that desired compaction is persisted

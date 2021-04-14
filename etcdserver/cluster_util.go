@@ -72,6 +72,8 @@ func GetClusterFromRemotePeers(lg *zap.Logger, urls []string, rt http.RoundTripp
 }
 
 // If logerr is true, it prints out more error messages.
+//
+// getClusterFromRemotePeers 访问集群中其他节点, 获取当前集群的信息
 func getClusterFromRemotePeers(lg *zap.Logger, urls []string, timeout time.Duration, logerr bool, rt http.RoundTripper) (*membership.RaftCluster, error) {
 	// 创建一个 HTTP 客户端
 	cc := &http.Client{

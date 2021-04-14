@@ -486,6 +486,8 @@ type PutRequest struct {
 	Value []byte `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
 	// lease is the lease ID to associate with the key in the key-value store. A lease
 	// value of 0 indicates no lease.
+	//
+	// 是否为该 key-value 指定了一个 Lease, 通过 --lease 参数指定
 	Lease int64 `protobuf:"varint,3,opt,name=lease,proto3" json:"lease,omitempty"`
 	// If prev_kv is set, etcd gets the previous key-value pair before changing it.
 	// The previous key-value pair will be returned in the put response.
@@ -1823,6 +1825,8 @@ type WatchResponse struct {
 	Created bool `protobuf:"varint,3,opt,name=created,proto3" json:"created,omitempty"`
 	// canceled is set to true if the response is for a cancel watch request.
 	// No further events will be sent to the canceled watcher.
+	//
+	// 为 true, 表示该 watcher 被取消了
 	Canceled bool `protobuf:"varint,4,opt,name=canceled,proto3" json:"canceled,omitempty"`
 	// compact_revision is set to the minimum index if a watcher tries to watch
 	// at a compacted index.
@@ -1837,6 +1841,7 @@ type WatchResponse struct {
 	CancelReason string `protobuf:"bytes,6,opt,name=cancel_reason,json=cancelReason,proto3" json:"cancel_reason,omitempty"`
 	// framgment is true if large watch response was split over multiple responses.
 	Fragment bool            `protobuf:"varint,7,opt,name=fragment,proto3" json:"fragment,omitempty"`
+	// 触发本次 watch 的事件
 	Events   []*mvccpb.Event `protobuf:"bytes,11,rep,name=events" json:"events,omitempty"`
 }
 
@@ -2817,7 +2822,9 @@ func (m *AuthenticateRequest) GetPassword() string {
 }
 
 type AuthUserAddRequest struct {
+	// 用户名
 	Name     string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// 用户密码
 	Password string                 `protobuf:"bytes,2,opt,name=password,proto3" json:"password,omitempty"`
 	Options  *authpb.UserAddOptions `protobuf:"bytes,3,opt,name=options" json:"options,omitempty"`
 }

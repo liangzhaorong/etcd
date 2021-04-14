@@ -28,6 +28,7 @@ import (
 	"go.uber.org/zap"
 )
 
+// newBackend 创建 Backend 实例
 func newBackend(cfg ServerConfig) backend.Backend {
 	bcfg := backend.DefaultBackendConfig() // 获取默认的 BackendConfig 实例配置
 	bcfg.Path = cfg.backendPath()          // 获取 BoltDB 数据库文件存放的路径
@@ -75,6 +76,7 @@ func openSnapshotBackend(cfg ServerConfig, ss *snap.Snapshotter, snapshot raftpb
 //
 // openBackend 在该函数中会启动一个后台 goroutine 完成 Backend 实例的初始化
 func openBackend(cfg ServerConfig) backend.Backend {
+	// 获取 BoltDB 数据库文件存放的路径, 为 {节点名}.etcd/member/snap/db
 	fn := cfg.backendPath()
 
 	now, beOpened := time.Now(), make(chan backend.Backend)
@@ -84,10 +86,12 @@ func openBackend(cfg ServerConfig) backend.Backend {
 	}()
 
 	select {
+	// 监听 Backend 实例创建成功
 	case be := <-beOpened:
 		if cfg.Logger != nil {
 			cfg.Logger.Info("opened backend db", zap.String("path", fn), zap.Duration("took", time.Since(now)))
 		}
+		// 返回 Backend 实例
 		return be
 
 	// 初始化 Backend 实例超时时, 会输出日志

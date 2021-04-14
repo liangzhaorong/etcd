@@ -21,9 +21,6 @@ type txid uint64
 // them. Pages can not be reclaimed by the writer until no more transactions
 // are using them. A long running read transaction can cause the database to
 // quickly grow.
-//
-// Tx 表示数据库中的一个只读或读写事务, 只读事务可以用来创建 Cursor 读取数据. 而读写事务除了读取数据,
-// 还可以创建、删除 Bucket 和键值对.
 type Tx struct {
 	writable       bool
 	managed        bool
@@ -100,8 +97,6 @@ func (tx *Tx) Stats() TxStats {
 // Bucket retrieves a bucket by name.
 // Returns nil if the bucket does not exist.
 // The bucket instance is only valid for the lifetime of the transaction.
-//
-// Bucket 获取指定 Bucket 实例
 func (tx *Tx) Bucket(name []byte) *Bucket {
 	return tx.root.Bucket(name)
 }
@@ -109,8 +104,6 @@ func (tx *Tx) Bucket(name []byte) *Bucket {
 // CreateBucket creates a new bucket.
 // Returns an error if the bucket already exists, if the bucket name is blank, or if the bucket name is too long.
 // The bucket instance is only valid for the lifetime of the transaction.
-//
-// CreateBucket 创建一个 Bucket 实例
 func (tx *Tx) CreateBucket(name []byte) (*Bucket, error) {
 	return tx.root.CreateBucket(name)
 }
@@ -118,8 +111,6 @@ func (tx *Tx) CreateBucket(name []byte) (*Bucket, error) {
 // CreateBucketIfNotExists creates a new bucket if it doesn't already exist.
 // Returns an error if the bucket name is blank, or if the bucket name is too long.
 // The bucket instance is only valid for the lifetime of the transaction.
-//
-// CreateBucketIfNotExists 在 Bucket 实例不存在的情况下才创建 Bucket 实例.
 func (tx *Tx) CreateBucketIfNotExists(name []byte) (*Bucket, error) {
 	return tx.root.CreateBucketIfNotExists(name)
 }
@@ -258,8 +249,6 @@ func (tx *Tx) commitFreelist() error {
 
 // Rollback closes the transaction and ignores all previous updates. Read-only
 // transactions must be rolled back and not committed.
-//
-// Rollback 关闭事务
 func (tx *Tx) Rollback() error {
 	_assert(!tx.managed, "managed tx rollback not allowed")
 	if tx.db == nil {
@@ -343,9 +332,6 @@ func (tx *Tx) Copy(w io.Writer) error {
 
 // WriteTo writes the entire database to a writer.
 // If err == nil then exactly tx.Size() bytes will be written into the writer.
-//
-// WriteTo 将数据库的一致性视图写入指定的 Writer 中. 建议在一个只读事务中调用该方法完成备份,
-// 这样不会阻塞其他的读写操作.
 func (tx *Tx) WriteTo(w io.Writer) (n int64, err error) {
 	// Attempt to open reader with WriteFlag
 	f, err := tx.db.openFile(tx.db.path, os.O_RDONLY|tx.WriteFlag, 0)

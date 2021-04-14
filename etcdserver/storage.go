@@ -28,6 +28,7 @@ import (
 	"go.uber.org/zap"
 )
 
+// Storage 该接口用于保存待持久化的日志条目以及快照数据
 type Storage interface {
 	// Save function saves ents and state to the underlying stable storage.
 	// Save MUST block until st and ents are on stable storage.

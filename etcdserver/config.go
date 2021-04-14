@@ -58,8 +58,12 @@ type ServerConfig struct {
 	MaxWALFiles  uint
 
 	// BackendBatchInterval is the maximum time before commit the backend transaction.
+	//
+	// 提交两次批量事务的最大时间差
 	BackendBatchInterval time.Duration
 	// BackendBatchLimit is the maximum operations before commit the backend transaction.
+	//
+	// 指定 v3 存储中每个批量读写事务能包含的最多的操作个数, 当超过这个阈值后, 当前批量读写事务会自动提交
 	BackendBatchLimit int
 
 	// BackendFreelistType is the type of the backend boltdb freelist.
@@ -120,6 +124,8 @@ type ServerConfig struct {
 	MaxTxnOps               uint
 
 	// MaxRequestBytes is the maximum request size to send over raft.
+	//
+	// 限制客户端发送的数据大小, 默认不可超过 1.5M
 	MaxRequestBytes uint
 
 	StrictReconfigCheck bool
@@ -127,6 +133,7 @@ type ServerConfig struct {
 	// ClientCertAuthEnabled is true when cert has been signed by the client CA.
 	ClientCertAuthEnabled bool
 
+	// 默认值 "simple"
 	AuthToken  string
 	BcryptCost uint
 	TokenTTL   uint
@@ -279,6 +286,7 @@ func (c *ServerConfig) WALDir() string {
 	return filepath.Join(c.MemberDir(), "wal")
 }
 
+// SnapDir 返回快照目录, 为 {节点名}.etcd/member/snap
 func (c *ServerConfig) SnapDir() string { return filepath.Join(c.MemberDir(), "snap") }
 
 func (c *ServerConfig) ShouldDiscover() bool { return c.DiscoveryURL != "" }
@@ -320,5 +328,5 @@ func (c *ServerConfig) bootstrapTimeout() time.Duration {
 	return time.Second
 }
 
-// backendPath 获取 BoltDB 数据库文件存放的路径
+// backendPath 获取 BoltDB 数据库文件存放的路径, 为 {节点名}.etcd/member/snap/db
 func (c *ServerConfig) backendPath() string { return filepath.Join(c.SnapDir(), "db") }
